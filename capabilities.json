@@ -1,0 +1,134 @@
+{
+  "$schema": "./capabilities.schema.json",
+  "version": "1.0.0",
+  "lastUpdated": "2026-01-24",
+  "vessel": {
+    "name": "claude-memory-mcp",
+    "description": "Persistent memory substrate for Claude with RAG, temporal reasoning, and dream states"
+  },
+  "features": {
+    "core_memory": {
+      "status": "implemented",
+      "description": "Remember, recall, forget operations with semantic search",
+      "since": "0.1.0"
+    },
+    "temporal_reasoning": {
+      "status": "implemented",
+      "description": "valid_from, valid_until, supersedes fields for belief evolution",
+      "since": "1.0.0"
+    },
+    "contradiction_detection": {
+      "status": "implemented",
+      "description": "Dream cycle detects conflicting memories",
+      "since": "1.0.0"
+    },
+    "memory_decay": {
+      "status": "implemented",
+      "description": "Importance decays over time, access boosts relevance",
+      "since": "0.5.0"
+    },
+    "auto_detection": {
+      "status": "implemented",
+      "description": "Type, tags, importance auto-detected from content",
+      "since": "0.2.0"
+    },
+    "preprocessing": {
+      "status": "implemented",
+      "description": "Clean text, extract entities/reasoning before storage",
+      "since": "1.0.0"
+    },
+    "smart_alignment": {
+      "status": "implemented",
+      "description": "Bidirectional trigger detection for auto-save",
+      "since": "1.0.0"
+    },
+    "dream_states": {
+      "status": "implemented",
+      "description": "Periodic consolidation, decay, contradiction resolution",
+      "since": "1.0.0"
+    },
+    "foundational_memories": {
+      "status": "implemented",
+      "description": "Core identity layer that resists decay and supersession",
+      "since": "1.0.0"
+    },
+    "session_tracking": {
+      "status": "implemented",
+      "description": "Track memories per session with auto-summarization",
+      "since": "0.3.0"
+    },
+    "project_isolation": {
+      "status": "implemented",
+      "description": "Memories scoped to projects",
+      "since": "0.4.0"
+    },
+    "multi_instance_sync": {
+      "status": "planned",
+      "description": "Share soul across multiple Claude instances on different machines",
+      "plannedFor": "2.0.0"
+    },
+    "instance_registration": {
+      "status": "planned",
+      "description": "Discover and track active Claude instances",
+      "plannedFor": "2.0.0"
+    },
+    "http_transport": {
+      "status": "planned",
+      "description": "HTTP server mode for remote MCP access",
+      "plannedFor": "2.0.0"
+    },
+    "preference_inference": {
+      "status": "planned",
+      "description": "Learn preferences automatically from behavior patterns",
+      "plannedFor": "2.0.0"
+    },
+    "relationship_context": {
+      "status": "planned",
+      "description": "Remember context about collaborators and stakeholders",
+      "plannedFor": "2.0.0"
+    },
+    "temporal_queries": {
+      "status": "planned",
+      "description": "Query memories as-of a specific date",
+      "plannedFor": "1.5.0"
+    }
+  },
+  "tools": {
+    "remember": { "status": "implemented", "category": "core" },
+    "recall": { "status": "implemented", "category": "core" },
+    "forget": { "status": "implemented", "category": "core" },
+    "update_memory": { "status": "implemented", "category": "core" },
+    "get_memory": { "status": "implemented", "category": "core" },
+    "list_memories": { "status": "implemented", "category": "core" },
+    "find_similar": { "status": "implemented", "category": "core" },
+    "memory_stats": { "status": "implemented", "category": "diagnostic" },
+    "memory_types": { "status": "implemented", "category": "diagnostic" },
+    "soul_status": { "status": "implemented", "category": "diagnostic" },
+    "prime": { "status": "implemented", "category": "autonomous" },
+    "should_remember": { "status": "implemented", "category": "autonomous" },
+    "extract_learnings": { "status": "implemented", "category": "autonomous" },
+    "analyze_conversation": { "status": "implemented", "category": "alignment" },
+    "what_to_remember": { "status": "implemented", "category": "alignment" },
+    "start_session": { "status": "implemented", "category": "session" },
+    "end_session": { "status": "implemented", "category": "session" },
+    "set_project": { "status": "implemented", "category": "project" },
+    "list_projects": { "status": "implemented", "category": "project" },
+    "get_project_context": { "status": "implemented", "category": "project" },
+    "introspect": { "status": "implemented", "category": "metacognition" }
+  },
+  "modules": {
+    "db": { "status": "implemented", "description": "ChromaDB persistence layer" },
+    "embeddings": { "status": "implemented", "description": "Local embeddings via transformers.js" },
+    "intelligence": { "status": "implemented", "description": "Auto-detection of type/tags/importance" },
+    "autonomous": { "status": "implemented", "description": "Trigger detection and extraction" },
+    "alignment": { "status": "implemented", "description": "Smart bidirectional alignment engine" },
+    "preprocess": { "status": "implemented", "description": "Text cleaning and entity extraction" },
+    "dream": { "status": "implemented", "description": "Dream cycle and consolidation" },
+    "introspect": { "status": "implemented", "description": "Metacognition and capability awareness" }
+  },
+  "storage": {
+    "vector_db": "ChromaDB",
+    "embedding_model": "all-MiniLM-L6-v2",
+    "embedding_dimensions": 384
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+chroma-data/
+coverage/
+*.log
+.env
+.mcp.json
+.claude/settings.local.json

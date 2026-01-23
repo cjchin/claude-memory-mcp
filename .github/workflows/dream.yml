@@ -1,0 +1,97 @@
+name: Dream State - Memory Consolidation
+
+on:
+  schedule:
+    # Run daily at 3 AM UTC (overnight processing)
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Dream mode'
+        required: true
+        default: 'consolidate'
+        type: choice
+        options:
+          - consolidate    # Merge similar memories
+          - contradiction  # Detect and resolve conflicts
+          - decay          # Apply importance decay
+          - full           # All of the above
+      dry_run:
+        description: 'Preview changes without applying'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  CHROMA_HOST: ${{ secrets.CHROMA_HOST || 'localhost' }}
+  CHROMA_PORT: ${{ secrets.CHROMA_PORT || '8000' }}
+
+jobs:
+  dream:
+    name: Enter Dream State
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build
+        run: npm run build
+      
+      - name: Start ChromaDB (if self-hosted)
+        if: ${{ env.CHROMA_HOST == 'localhost' }}
+        run: |
+          docker run -d \
+            --name chromadb \
+            -p 8000:8000 \
+            -v ${{ github.workspace }}/chroma-data:/chroma/chroma \
+            chromadb/chroma:latest
+          sleep 10  # Wait for startup
+      
+      - name: Dream - Consolidation
+        if: ${{ github.event.inputs.mode == 'consolidate' || github.event.inputs.mode == 'full' }}
+        run: |
+          echo "🌙 Entering dream state: Consolidation"
+          npm run cli -- dream consolidate ${{ github.event.inputs.dry_run && '--dry-run' || '' }}
+      
+      - name: Dream - Contradiction Detection
+        if: ${{ github.event.inputs.mode == 'contradiction' || github.event.inputs.mode == 'full' }}
+        run: |
+          echo "🌙 Entering dream state: Contradiction Detection"
+          npm run cli -- dream contradictions ${{ github.event.inputs.dry_run && '--dry-run' || '' }}
+      
+      - name: Dream - Importance Decay
+        if: ${{ github.event.inputs.mode == 'decay' || github.event.inputs.mode == 'full' }}
+        run: |
+          echo "🌙 Entering dream state: Importance Decay"
+          npm run cli -- dream decay ${{ github.event.inputs.dry_run && '--dry-run' || '' }}
+      
+      - name: Generate Dream Report
+        run: |
+          echo "📊 Generating dream state report..."
+          npm run cli -- stats > dream-report.txt
+          cat dream-report.txt
+      
+      - name: Upload Dream Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dream-report-${{ github.run_number }}
+          path: dream-report.txt
+      
+      - name: Commit changes (if not dry run)
+        if: ${{ !github.event.inputs.dry_run }}
+        run: |
+          git config user.name "Dream Bot"
+          git config user.email "dream@soul.local"
+          git add chroma-data/
+          git diff --staged --quiet || git commit -m "🌙 Dream state: ${{ github.event.inputs.mode }} - $(date +%Y-%m-%d)"
+          git push
