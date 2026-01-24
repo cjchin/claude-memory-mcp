@@ -67,8 +67,11 @@ server.tool(
     tags: z.array(z.string()).optional().describe("Tags for categorization (auto-detected if not specified)"),
     importance: z.number().min(1).max(5).optional().describe("Importance 1-5 (auto-detected if not specified)"),
     project: z.string().optional().describe("Project name (uses current project if not specified)"),
+    scope: z.enum(["personal", "team", "project"]).optional().describe("Memory scope: personal (default), team, or project"),
+    owner: z.string().optional().describe("Owner identifier (user or agent ID)"),
+    related_to: z.array(z.string()).optional().describe("IDs of related memories (creates bidirectional links)"),
   },
-  async ({ content, type, tags, importance, project }) => {
+  async ({ content, type, tags, importance, project, scope, owner, related_to }) => {
     // Preprocess the content
     const cleanedContent = cleanText(content);
     const extractedEntities = extractEntities(content);
@@ -95,6 +98,7 @@ server.tool(
     // Merge extracted entities into tags
     const mergedTags = [...new Set([...detectedTags, ...extractedEntities])];
 
+    const now = new Date().toISOString();
     const id = await saveMemory({
       content: cleanedContent,
       type: detectedType,
@@ -102,20 +106,27 @@ server.tool(
       importance: detectedImportance,
       project: project || config.current_project,
       session_id: getCurrentSessionId(),
-      timestamp: new Date().toISOString(),
-      valid_from: new Date().toISOString(),
+      timestamp: now,              // Event time
+      ingestion_time: now,         // Ingestion time (bi-temporal)
+      valid_from: now,
       source: "human",
+      scope: scope || "personal",  // Memory scope (from Mem0)
+      owner: owner,                // Owner identifier
+      related_memories: related_to, // Bidirectional linking
       // Store extracted reasoning in metadata
       metadata: extractedReasoning ? { reasoning: extractedReasoning } : undefined,
     });
 
     await addMemoryToSession(id);
 
+    const scopeInfo = scope && scope !== "personal" ? `\nScope: ${scope}` : "";
+    const linkedInfo = related_to?.length ? `\nLinked to: ${related_to.join(", ")}` : "";
+
     return {
       content: [
         {
           type: "text" as const,
-          text: `Saved memory [${id}]\nType: ${detectedType}\nTags: ${mergedTags.join(", ") || "none"}\nImportance: ${detectedImportance}/5${extractedEntities.length ? `\nExtracted entities: ${extractedEntities.join(", ")}` : ""}`,
+          text: `Saved memory [${id}]\nType: ${detectedType}\nTags: ${mergedTags.join(", ") || "none"}\nImportance: ${detectedImportance}/5${scopeInfo}${linkedInfo}${extractedEntities.length ? `\nExtracted entities: ${extractedEntities.join(", ")}` : ""}`,
         },
       ],
     };
@@ -157,8 +168,11 @@ server.tool(
           `[${i + 1}] ${m.type.toUpperCase()} (${Math.round(m.score * 100)}% match, importance: ${m.importance}/5)\n` +
           `ID: ${m.id}\n` +
           `Tags: ${m.tags.join(", ") || "none"}\n` +
-          `Project: ${m.project || "unassigned"}\n` +
-          `Date: ${m.timestamp}\n` +
+          `Project: ${m.project || "unassigned"}` +
+          (m.scope && m.scope !== "personal" ? ` | Scope: ${m.scope}` : "") + `\n` +
+          `Date: ${m.timestamp}` +
+          (m.ingestion_time && m.ingestion_time !== m.timestamp ? ` (ingested: ${m.ingestion_time})` : "") + `\n` +
+          (m.related_memories?.length ? `Links: ${m.related_memories.join(", ")}\n` : "") +
           `${m.content}`
       )
       .join("\n\n---\n\n");
@@ -189,6 +203,19 @@ server.tool(
       };
     }
 
+    const linksInfo = memory.related_memories?.length
+      ? `\nLinked to: ${memory.related_memories.join(", ")}`
+      : "";
+    const scopeInfo = memory.scope && memory.scope !== "personal"
+      ? `\nScope: ${memory.scope}`
+      : "";
+    const ownerInfo = memory.owner
+      ? `\nOwner: ${memory.owner}`
+      : "";
+    const ingestionInfo = memory.ingestion_time && memory.ingestion_time !== memory.timestamp
+      ? `\nIngested: ${memory.ingestion_time}`
+      : "";
+
     return {
       content: [
         {
@@ -198,10 +225,12 @@ server.tool(
             `Type: ${memory.type}\n` +
             `Tags: ${memory.tags.join(", ")}\n` +
             `Importance: ${memory.importance}/5\n` +
-            `Project: ${memory.project || "unassigned"}\n` +
-            `Created: ${memory.timestamp}\n` +
+            `Project: ${memory.project || "unassigned"}` +
+            scopeInfo + ownerInfo + `\n` +
+            `Created: ${memory.timestamp}` + ingestionInfo + `\n` +
             `Accessed: ${memory.access_count} times\n` +
-            `Last accessed: ${memory.last_accessed || "never"}\n\n` +
+            `Last accessed: ${memory.last_accessed || "never"}` +
+            linksInfo + `\n\n` +
             `Content:\n${memory.content}`,
         },
       ],
@@ -626,139 +655,6 @@ server.tool("soul_status", {}, async () => {
     ],
   };
 });
-
-// ============ PRIME - CNS ACTIVATION ============
-
-/**
- * PRIME is the central nervous system's activation tool.
- * Call this at the START of every significant session to:
- * - Load relevant project context automatically
- * - Surface pending TODOs
- * - Recall recent decisions and patterns
- * - Provide continuity from previous sessions
- */
-server.tool(
-  "prime",
-  {
-    topic: z.string().optional().describe("Optional topic to focus context loading on"),
-    depth: z.enum(["quick", "normal", "deep"]).optional().default("normal"),
-  },
-  async ({ topic, depth }) => {
-    const stats = await getMemoryStats();
-    const sessionId = getCurrentSessionId();
-    const project = config.current_project;
-
-    const sections: string[] = [];
-
-    // Header
-    sections.push(
-      `╔══════════════════════════════════════════════════════════════╗\n` +
-      `║              DIGITAL SOUL - CONTEXT PRIMED                  ║\n` +
-      `╚══════════════════════════════════════════════════════════════╝\n`
-    );
-
-    // Status line
-    sections.push(
-      `Session: ${sessionId}\n` +
-      `Project: ${project || "none"}\n` +
-      `Memories: ${stats.total} total, ${stats.recentCount} this week\n`
-    );
-
-    const limits = { quick: 3, normal: 5, deep: 10 };
-    const limit = limits[depth];
-
-    // 1. PENDING TODOS
-    const todos = await listMemories({
-      limit: limit,
-      project: project || undefined,
-      type: "todo",
-      sortBy: "importance",
-    });
-
-    if (todos.length > 0) {
-      const todoList = todos
-        .map((t) => `  □ [${t.importance}★] ${t.content.slice(0, 100)}${t.content.length > 100 ? "..." : ""}`)
-        .join("\n");
-      sections.push(`\n📋 PENDING TODOS (${todos.length}):\n${todoList}`);
-    }
-
-    // 2. RECENT DECISIONS
-    const decisions = await listMemories({
-      limit: limit,
-      project: project || undefined,
-      type: "decision",
-      sortBy: "recent",
-    });
-
-    if (decisions.length > 0) {
-      const decisionList = decisions
-        .map((d) => `  • ${d.content.slice(0, 120)}${d.content.length > 120 ? "..." : ""}`)
-        .join("\n");
-      sections.push(`\n🎯 RECENT DECISIONS (${decisions.length}):\n${decisionList}`);
-    }
-
-    // 3. ACTIVE PATTERNS
-    const patterns = await listMemories({
-      limit: Math.max(3, limit - 2),
-      project: project || undefined,
-      type: "pattern",
-      sortBy: "importance",
-    });
-
-    if (patterns.length > 0) {
-      const patternList = patterns
-        .map((p) => `  • ${p.content.slice(0, 100)}${p.content.length > 100 ? "..." : ""}`)
-        .join("\n");
-      sections.push(`\n🔄 ACTIVE PATTERNS (${patterns.length}):\n${patternList}`);
-    }
-
-    // 4. TOPIC-SPECIFIC CONTEXT
-    if (topic) {
-      const topicMemories = await searchMemories(topic, {
-        limit: limit,
-        project: project || undefined,
-      });
-
-      if (topicMemories.length > 0) {
-        const topicList = topicMemories
-          .map((m) => `  [${m.type}] ${m.content.slice(0, 100)}${m.content.length > 100 ? "..." : ""} (${Math.round(m.score * 100)}%)`)
-          .join("\n");
-        sections.push(`\n🎯 CONTEXT FOR "${topic}" (${topicMemories.length}):\n${topicList}`);
-      }
-    }
-
-    // 5. RECENT LEARNINGS
-    const learnings = await listMemories({
-      limit: Math.max(2, limit - 3),
-      project: project || undefined,
-      type: "learning",
-      sortBy: "recent",
-    });
-
-    if (learnings.length > 0) {
-      const learningList = learnings
-        .map((l) => `  💡 ${l.content.slice(0, 100)}${l.content.length > 100 ? "..." : ""}`)
-        .join("\n");
-      sections.push(`\n📚 RECENT LEARNINGS (${learnings.length}):\n${learningList}`);
-    }
-
-    // Footer
-    sections.push(
-      `\n${"─".repeat(60)}\n` +
-      `Soul is primed and ready. Context loaded at ${depth} depth.\n` +
-      `Use 'align' for deeper topic focus, 'recall' to search memories.`
-    );
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: sections.join("\n"),
-        },
-      ],
-    };
-  }
-);
 
 // ============ INTROSPECTION - METACOGNITION ============
 

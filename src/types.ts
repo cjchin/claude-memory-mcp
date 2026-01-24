@@ -17,20 +17,31 @@ export type MemoryLayer =
   | "long_term"     // Consolidated, semantically indexed
   | "foundational"; // Core identity, immutable truths
 
+// Memory scope (from Mem0: who can access this memory)
+export type MemoryScope =
+  | "personal"      // Only the user who created it
+  | "team"          // Shared with team members
+  | "project";      // Scoped to a specific project
+
 export interface Memory {
   id: string;
   content: string;
   type: MemoryType;
   tags: string[];
-  timestamp: string;
+  timestamp: string;             // Event time: when this actually happened
+  ingestion_time?: string;       // When this was recorded in the soul (bi-temporal)
   project?: string;
   session_id?: string;
-  importance: number;  // 1-5, affects retrieval priority
+  importance: number;            // 1-5, affects retrieval priority
   access_count: number;
   last_accessed?: string;
   related_memories?: string[];
   metadata?: Record<string, unknown>;
-  
+
+  // Scope field (from Mem0)
+  scope?: MemoryScope;           // Who can access: personal, team, or project
+  owner?: string;                // User/agent who created this memory
+
   // Temporal soul fields
   layer?: MemoryLayer;           // Which layer this memory lives in
   valid_from?: string;           // When this belief became true

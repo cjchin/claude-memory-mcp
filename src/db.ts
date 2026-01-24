@@ -1,7 +1,7 @@
 import { ChromaClient, Collection, IncludeEnum } from "chromadb";
 import { embed } from "./embeddings.js";
 import { config } from "./config.js";
-import type { Memory, MemoryType, MemoryLayer, Session, ProjectContext } from "./types.js";
+import type { Memory, MemoryType, MemoryLayer, MemoryScope, Session, ProjectContext } from "./types.js";
 
 const MEMORIES_COLLECTION = "claude_memories";
 const SESSIONS_COLLECTION = "claude_sessions";
@@ -44,12 +44,15 @@ function generateId(prefix: string): string {
 // ============ MEMORY OPERATIONS ============
 
 export async function saveMemory(
-  memory: Omit<Memory, "id" | "access_count">
+  memory: Omit<Memory, "id" | "access_count">,
+  options: { bidirectionalLink?: boolean } = {}
 ): Promise<string> {
   if (!memoriesCollection) await initDb();
 
   const id = generateId("mem");
   const embedding = await embed(memory.content);
+  const now = new Date().toISOString();
+  const { bidirectionalLink = true } = options;
 
   await memoriesCollection!.add({
     ids: [id],
@@ -59,7 +62,8 @@ export async function saveMemory(
       {
         type: memory.type,
         tags: memory.tags.join(","),
-        timestamp: memory.timestamp,
+        timestamp: memory.timestamp,              // Event time (when it happened)
+        ingestion_time: memory.ingestion_time || now,  // When recorded (bi-temporal)
         project: memory.project || "",
         session_id: memory.session_id || "",
         importance: memory.importance,
@@ -67,6 +71,9 @@ export async function saveMemory(
         last_accessed: "",
         related_memories: memory.related_memories?.join(",") || "",
         metadata_json: memory.metadata ? JSON.stringify(memory.metadata) : "",
+        // Scope fields (from Mem0)
+        scope: memory.scope || "personal",
+        owner: memory.owner || "",
         // Soul temporal fields
         layer: memory.layer || "long_term",
         valid_from: memory.valid_from || memory.timestamp,
@@ -79,7 +86,102 @@ export async function saveMemory(
     ],
   });
 
+  // Bidirectional linking (from A-MEM): update related memories to link back
+  if (bidirectionalLink && memory.related_memories?.length) {
+    await createBidirectionalLinks(id, memory.related_memories);
+  }
+
   return id;
+}
+
+/**
+ * Create bidirectional links between memories (from A-MEM pattern)
+ * When A links to B, B should also link to A
+ */
+async function createBidirectionalLinks(newMemoryId: string, relatedIds: string[]): Promise<void> {
+  for (const relatedId of relatedIds) {
+    try {
+      const relatedMemory = await getMemoryRaw(relatedId);
+      if (!relatedMemory) continue;
+
+      const existingLinks = relatedMemory.related_memories || [];
+      if (!existingLinks.includes(newMemoryId)) {
+        // Add the new memory to the related memory's links
+        await updateMemoryMetadata(relatedId, {
+          related_memories: [...existingLinks, newMemoryId].join(","),
+        });
+      }
+    } catch (e) {
+      // Don't fail the whole save if bidirectional linking fails
+      console.error(`Failed to create bidirectional link to ${relatedId}:`, e);
+    }
+  }
+}
+
+/**
+ * Get memory without updating access count (for internal operations)
+ */
+async function getMemoryRaw(id: string): Promise<Memory | null> {
+  if (!memoriesCollection) await initDb();
+
+  const results = await memoriesCollection!.get({
+    ids: [id],
+    include: [IncludeEnum.Documents, IncludeEnum.Metadatas],
+  });
+
+  if (!results.ids.length) return null;
+
+  const metadata = results.metadatas?.[0] || {};
+
+  return {
+    id,
+    content: results.documents?.[0] || "",
+    type: (metadata.type as MemoryType) || "context",
+    tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
+    timestamp: (metadata.timestamp as string) || "",
+    ingestion_time: (metadata.ingestion_time as string) || undefined,
+    project: (metadata.project as string) || undefined,
+    session_id: (metadata.session_id as string) || undefined,
+    importance: (metadata.importance as number) || 3,
+    access_count: (metadata.access_count as number) || 0,
+    last_accessed: (metadata.last_accessed as string) || undefined,
+    related_memories: ((metadata.related_memories as string) || "")
+      .split(",")
+      .filter(Boolean),
+    scope: ((metadata.scope as string) || "personal") as MemoryScope,
+    owner: (metadata.owner as string) || undefined,
+    layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
+    valid_from: (metadata.valid_from as string) || undefined,
+    valid_until: (metadata.valid_until as string) || undefined,
+    supersedes: (metadata.supersedes as string) || undefined,
+    superseded_by: (metadata.superseded_by as string) || undefined,
+    confidence: (metadata.confidence as number) ?? 1,
+    source: ((metadata.source as string) || "human") as Memory["source"],
+  };
+}
+
+/**
+ * Update only metadata fields (for internal operations like bidirectional linking)
+ */
+async function updateMemoryMetadata(
+  id: string,
+  metadataUpdates: Record<string, string | number | boolean>
+): Promise<void> {
+  if (!memoriesCollection) await initDb();
+
+  const results = await memoriesCollection!.get({
+    ids: [id],
+    include: [IncludeEnum.Metadatas],
+  });
+
+  if (!results.ids.length) return;
+
+  const existingMetadata = results.metadatas?.[0] || {};
+
+  await memoriesCollection!.update({
+    ids: [id],
+    metadatas: [{ ...existingMetadata, ...metadataUpdates } as Record<string, string | number | boolean>],
+  });
 }
 
 export async function searchMemories(
@@ -144,6 +246,7 @@ export async function searchMemories(
       type: (metadata.type as MemoryType) || "context",
       tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
       timestamp: (metadata.timestamp as string) || "",
+      ingestion_time: (metadata.ingestion_time as string) || undefined,
       project: (metadata.project as string) || undefined,
       session_id: (metadata.session_id as string) || undefined,
       importance: (metadata.importance as number) || 3,
@@ -155,6 +258,9 @@ export async function searchMemories(
       metadata: metadata.metadata_json
         ? JSON.parse(metadata.metadata_json as string)
         : undefined,
+      // Scope fields
+      scope: ((metadata.scope as string) || "personal") as MemoryScope,
+      owner: (metadata.owner as string) || undefined,
       // Soul temporal fields
       layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
       valid_from: (metadata.valid_from as string) || undefined,
@@ -228,6 +334,7 @@ export async function getMemory(id: string): Promise<Memory | null> {
     type: (metadata.type as MemoryType) || "context",
     tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
     timestamp: (metadata.timestamp as string) || "",
+    ingestion_time: (metadata.ingestion_time as string) || undefined,
     project: (metadata.project as string) || undefined,
     session_id: (metadata.session_id as string) || undefined,
     importance: (metadata.importance as number) || 3,
@@ -236,6 +343,9 @@ export async function getMemory(id: string): Promise<Memory | null> {
     related_memories: ((metadata.related_memories as string) || "")
       .split(",")
       .filter(Boolean),
+    // Scope fields
+    scope: ((metadata.scope as string) || "personal") as MemoryScope,
+    owner: (metadata.owner as string) || undefined,
     // Soul temporal fields
     layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
     valid_from: (metadata.valid_from as string) || undefined,
@@ -268,12 +378,17 @@ export async function updateMemory(
         type: updates.type || existing.type,
         tags: (updates.tags || existing.tags).join(","),
         timestamp: existing.timestamp,
+        ingestion_time: existing.ingestion_time || existing.timestamp,
         project: updates.project ?? existing.project ?? "",
         session_id: existing.session_id || "",
         importance: updates.importance ?? existing.importance,
         access_count: existing.access_count,
         last_accessed: existing.last_accessed || "",
         related_memories: (updates.related_memories || existing.related_memories || []).join(","),
+        metadata_json: updates.metadata ? JSON.stringify(updates.metadata) : (existing.metadata ? JSON.stringify(existing.metadata) : ""),
+        // Scope fields
+        scope: updates.scope || existing.scope || "personal",
+        owner: updates.owner || existing.owner || "",
         // Soul temporal fields
         layer: updates.layer || existing.layer || "long_term",
         valid_from: updates.valid_from || existing.valid_from || existing.timestamp,
@@ -352,6 +467,7 @@ export async function listMemories(options: {
       type: (metadata.type as MemoryType) || "context",
       tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
       timestamp: (metadata.timestamp as string) || "",
+      ingestion_time: (metadata.ingestion_time as string) || undefined,
       project: (metadata.project as string) || undefined,
       session_id: (metadata.session_id as string) || undefined,
       importance: (metadata.importance as number) || 3,
@@ -360,6 +476,9 @@ export async function listMemories(options: {
       related_memories: ((metadata.related_memories as string) || "")
         .split(",")
         .filter(Boolean),
+      // Scope fields
+      scope: ((metadata.scope as string) || "personal") as MemoryScope,
+      owner: (metadata.owner as string) || undefined,
       // Soul temporal fields
       layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
       valid_from: (metadata.valid_from as string) || undefined,
