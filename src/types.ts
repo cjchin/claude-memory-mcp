@@ -23,6 +23,30 @@ export type MemoryScope =
   | "team"          // Shared with team members
   | "project";      // Scoped to a specific project
 
+// Link relationship types (Zettelkasten principle #4: explain WHY notes are linked)
+export type LinkType =
+  | "related"       // General semantic relationship
+  | "supports"      // This memory provides evidence for linked memory
+  | "contradicts"   // This memory conflicts with linked memory
+  | "extends"       // This memory extends/elaborates linked memory
+  | "supersedes"    // This memory replaces linked memory
+  | "depends_on"    // This memory requires linked memory for context
+  | "caused_by"     // This memory resulted from linked memory
+  | "implements"    // This memory is an implementation of linked memory
+  | "example_of";   // This memory is an example of linked memory
+
+/**
+ * Rich link with context (Zettelkasten principle: explain WHY linked)
+ */
+export interface MemoryLink {
+  targetId: string;           // ID of linked memory
+  type: LinkType;             // Relationship type
+  reason?: string;            // Human-readable explanation of why linked
+  strength?: number;          // 0-1, how strong is the connection
+  createdAt: string;          // When link was created
+  createdBy?: string;         // "human" | "walker" | walker ID
+}
+
 export interface Memory {
   id: string;
   content: string;
@@ -35,7 +59,8 @@ export interface Memory {
   importance: number;            // 1-5, affects retrieval priority
   access_count: number;
   last_accessed?: string;
-  related_memories?: string[];
+  related_memories?: string[];              // Simple link IDs (backward compat)
+  links?: MemoryLink[];                     // Rich links with context (Zettelkasten)
   metadata?: Record<string, unknown>;
 
   // Scope field (from Mem0)
