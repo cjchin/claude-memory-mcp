@@ -133,7 +133,7 @@ server.tool(
   }
 );
 
-// Semantic search
+// Semantic search with optional hybrid mode
 server.tool(
   "recall",
   {
@@ -146,14 +146,18 @@ server.tool(
     tags: z.array(z.string()).optional().describe("Filter by tags"),
     project: z.string().optional().describe("Filter by project"),
     min_importance: z.number().min(1).max(5).optional().describe("Minimum importance level"),
+    hybrid: z.boolean().optional().describe("Enable hybrid search (BM25 + semantic + graph)"),
+    expand_graph: z.boolean().optional().describe("Include connected memories in results"),
   },
-  async ({ query, limit, types, tags, project, min_importance }) => {
+  async ({ query, limit, types, tags, project, min_importance, hybrid, expand_graph }) => {
     const memories = await searchMemories(query, {
       limit,
       types: types as MemoryType[] | undefined,
       tags,
       project: project || config.current_project,
       minImportance: min_importance,
+      useHybrid: hybrid,
+      expandGraph: expand_graph,
     });
 
     if (memories.length === 0) {
@@ -163,9 +167,25 @@ server.tool(
     }
 
     const formatted = memories
-      .map(
-        (m, i) =>
-          `[${i + 1}] ${m.type.toUpperCase()} (${Math.round(m.score * 100)}% match, importance: ${m.importance}/5)\n` +
+      .map((m: any, i: number) => {
+        // Check if this is a hybrid search result with detailed scores
+        const isHybrid = m.semanticScore !== undefined;
+        const isGraphExpansion = m._isGraphExpansion;
+
+        let scoreInfo = `${Math.round(m.score * 100)}% match`;
+        if (isHybrid) {
+          scoreInfo = `score: ${Math.round(m.score * 100)}% ` +
+            `(sem: ${Math.round(m.semanticScore * 100)}%, ` +
+            `bm25: ${Math.round(m.bm25Score * 100)}%` +
+            (m.graphBoost > 0 ? `, graph: +${Math.round(m.graphBoost * 100)}%` : "") +
+            `)`;
+        }
+        if (isGraphExpansion) {
+          scoreInfo = `🔗 graph neighbor (distance: ${m.graphDistance})`;
+        }
+
+        return (
+          `[${i + 1}] ${m.type.toUpperCase()} (${scoreInfo}, importance: ${m.importance}/5)\n` +
           `ID: ${m.id}\n` +
           `Tags: ${m.tags.join(", ") || "none"}\n` +
           `Project: ${m.project || "unassigned"}` +
@@ -174,14 +194,18 @@ server.tool(
           (m.ingestion_time && m.ingestion_time !== m.timestamp ? ` (ingested: ${m.ingestion_time})` : "") + `\n` +
           (m.related_memories?.length ? `Links: ${m.related_memories.join(", ")}\n` : "") +
           `${m.content}`
-      )
+        );
+      })
       .join("\n\n---\n\n");
+
+    const modeInfo = hybrid ? " (hybrid: semantic + BM25 + graph)" : "";
+    const graphInfo = expand_graph ? ` [graph expansion enabled]` : "";
 
     return {
       content: [
         {
           type: "text" as const,
-          text: `Found ${memories.length} relevant memories:\n\n${formatted}`,
+          text: `Found ${memories.length} relevant memories${modeInfo}${graphInfo}:\n\n${formatted}`,
         },
       ],
     };

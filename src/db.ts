@@ -2,6 +2,12 @@ import { ChromaClient, Collection, IncludeEnum } from "chromadb";
 import { embed } from "./embeddings.js";
 import { config } from "./config.js";
 import type { Memory, MemoryType, MemoryLayer, MemoryScope, Session, ProjectContext } from "./types.js";
+import {
+  hybridScore,
+  expandWithGraphNeighbors,
+  type ScoredMemory,
+  type HybridSearchConfig,
+} from "./hybrid-search.js";
 
 const MEMORIES_COLLECTION = "claude_memories";
 const SESSIONS_COLLECTION = "claude_sessions";
@@ -184,16 +190,23 @@ async function updateMemoryMetadata(
   });
 }
 
+export interface SearchOptions {
+  limit?: number;
+  types?: MemoryType[];
+  tags?: string[];
+  project?: string;
+  minImportance?: number;
+  includeDecayed?: boolean;
+  // Hybrid search options
+  useHybrid?: boolean;           // Enable hybrid search (BM25 + graph)
+  hybridConfig?: Partial<HybridSearchConfig>;
+  expandGraph?: boolean;         // Include graph neighbors in results
+  graphExpansionLimit?: number;  // Max neighbors to add
+}
+
 export async function searchMemories(
   query: string,
-  options: {
-    limit?: number;
-    types?: MemoryType[];
-    tags?: string[];
-    project?: string;
-    minImportance?: number;
-    includeDecayed?: boolean;
-  } = {}
+  options: SearchOptions = {}
 ): Promise<(Memory & { score: number })[]> {
   if (!memoriesCollection) await initDb();
 
@@ -204,6 +217,10 @@ export async function searchMemories(
     project,
     minImportance,
     includeDecayed = false,
+    useHybrid = false,
+    hybridConfig,
+    expandGraph = false,
+    graphExpansionLimit = 3,
   } = options;
 
   const queryEmbedding = await embed(query);
@@ -298,10 +315,98 @@ export async function searchMemories(
     });
   }
 
-  // Sort by adjusted score and limit
+  // Apply hybrid scoring if enabled
+  if (useHybrid) {
+    // Get all memories for graph building (limited for performance)
+    const allMemoriesForGraph = await getAllMemoriesForGraph(project);
+
+    const defaultHybridConfig: HybridSearchConfig = {
+      semanticWeight: 0.6,
+      bm25Weight: 0.3,
+      graphWeight: 0.1,
+      graphMaxDistance: 2,
+    };
+
+    const mergedConfig = { ...defaultHybridConfig, ...hybridConfig };
+    const hybridResults = hybridScore(memories, query, allMemoriesForGraph, mergedConfig);
+
+    // Optionally expand with graph neighbors
+    if (expandGraph && hybridResults.length > 0) {
+      const neighbors = expandWithGraphNeighbors(
+        hybridResults,
+        allMemoriesForGraph,
+        graphExpansionLimit,
+        1  // Only immediate neighbors
+      );
+
+      // Add neighbors with a lower score indicator
+      const neighborResults = neighbors.map((m) => ({
+        ...m,
+        score: 0.1,  // Low score to appear after main results
+        semanticScore: 0,
+        bm25Score: 0,
+        graphBoost: 0.1,
+        graphDistance: 1,
+        _isGraphExpansion: true,
+      }));
+
+      return [...hybridResults.slice(0, limit), ...neighborResults] as any;
+    }
+
+    return hybridResults.slice(0, limit);
+  }
+
+  // Sort by adjusted score and limit (non-hybrid path)
   return memories
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
+}
+
+/**
+ * Get all memories for graph building (internal helper)
+ * Limited to recent/important memories for performance
+ */
+async function getAllMemoriesForGraph(project?: string): Promise<Memory[]> {
+  if (!memoriesCollection) await initDb();
+
+  const whereClause = project ? { project } : undefined;
+
+  const results = await memoriesCollection!.get({
+    limit: 500,  // Reasonable limit for graph building
+    where: whereClause,
+    include: [IncludeEnum.Documents, IncludeEnum.Metadatas],
+  });
+
+  if (!results.ids.length) return [];
+
+  return results.ids.map((id, i) => {
+    const metadata = results.metadatas?.[i] || {};
+    return {
+      id,
+      content: results.documents?.[i] || "",
+      type: (metadata.type as MemoryType) || "context",
+      tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
+      timestamp: (metadata.timestamp as string) || "",
+      ingestion_time: (metadata.ingestion_time as string) || undefined,
+      project: (metadata.project as string) || undefined,
+      session_id: (metadata.session_id as string) || undefined,
+      importance: (metadata.importance as number) || 3,
+      access_count: (metadata.access_count as number) || 0,
+      last_accessed: (metadata.last_accessed as string) || undefined,
+      related_memories: ((metadata.related_memories as string) || "")
+        .split(",")
+        .filter(Boolean),
+      scope: ((metadata.scope as string) || "personal") as MemoryScope,
+      owner: (metadata.owner as string) || undefined,
+      layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
+      valid_from: (metadata.valid_from as string) || undefined,
+      valid_until: (metadata.valid_until as string) || undefined,
+      supersedes: (metadata.supersedes as string) || undefined,
+      superseded_by: (metadata.superseded_by as string) || undefined,
+      confidence: (metadata.confidence as number) ?? 1,
+      source: ((metadata.source as string) || "human") as Memory["source"],
+    };
+  });
 }
 
 export async function getMemory(id: string): Promise<Memory | null> {
