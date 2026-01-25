@@ -618,6 +618,126 @@ export async function listMemories(options: {
   return memories.slice(0, limit);
 }
 
+/**
+ * Get all memories with their embeddings for graph analysis
+ * Used by graph enrichment to compute similarity
+ */
+export async function getAllMemoriesWithEmbeddings(): Promise<
+  Array<Memory & { embedding: number[] }>
+> {
+  if (!memoriesCollection) await initDb();
+
+  const results = await memoriesCollection!.get({
+    include: [
+      IncludeEnum.Documents,
+      IncludeEnum.Metadatas,
+      IncludeEnum.Embeddings,
+    ],
+  });
+
+  if (!results.ids.length) return [];
+
+  return results.ids.map((id, i) => {
+    const metadata = results.metadatas?.[i] || {};
+    const embedding = results.embeddings?.[i] || [];
+
+    return {
+      id,
+      content: results.documents?.[i] || "",
+      type: (metadata.type as MemoryType) || "context",
+      tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
+      timestamp: (metadata.timestamp as string) || "",
+      ingestion_time: (metadata.ingestion_time as string) || undefined,
+      project: (metadata.project as string) || undefined,
+      session_id: (metadata.session_id as string) || undefined,
+      importance: (metadata.importance as number) || 3,
+      access_count: (metadata.access_count as number) || 0,
+      last_accessed: (metadata.last_accessed as string) || undefined,
+      related_memories: ((metadata.related_memories as string) || "")
+        .split(",")
+        .filter(Boolean),
+      scope: ((metadata.scope as string) || "personal") as MemoryScope,
+      owner: (metadata.owner as string) || undefined,
+      layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
+      valid_from: (metadata.valid_from as string) || undefined,
+      valid_until: (metadata.valid_until as string) || undefined,
+      supersedes: (metadata.supersedes as string) || undefined,
+      superseded_by: (metadata.superseded_by as string) || undefined,
+      confidence: (metadata.confidence as number) ?? 1,
+      source: ((metadata.source as string) || "human") as Memory["source"],
+      embedding: embedding as number[],
+    };
+  });
+}
+
+/**
+ * Add a rich link to a memory
+ */
+export async function addMemoryLink(
+  memoryId: string,
+  link: {
+    targetId: string;
+    type: string;
+    reason?: string;
+    strength?: number;
+    createdBy?: string;
+  }
+): Promise<void> {
+  if (!memoriesCollection) await initDb();
+
+  const results = await memoriesCollection!.get({
+    ids: [memoryId],
+    include: [IncludeEnum.Metadatas],
+  });
+
+  if (!results.ids.length) {
+    throw new Error(`Memory ${memoryId} not found`);
+  }
+
+  const metadata = results.metadatas?.[0] || {};
+
+  // Parse existing links JSON or initialize empty array
+  let existingLinks: any[] = [];
+  if (metadata.links_json) {
+    try {
+      existingLinks = JSON.parse(metadata.links_json as string);
+    } catch {
+      existingLinks = [];
+    }
+  }
+
+  // Check for duplicate link
+  const isDuplicate = existingLinks.some(
+    (l) => l.targetId === link.targetId && l.type === link.type
+  );
+
+  if (!isDuplicate) {
+    existingLinks.push({
+      ...link,
+      createdAt: new Date().toISOString(),
+    });
+
+    await memoriesCollection!.update({
+      ids: [memoryId],
+      metadatas: [
+        {
+          ...metadata,
+          links_json: JSON.stringify(existingLinks),
+          // Also update simple related_memories for backward compat
+          related_memories: [
+            ...new Set([
+              ...((metadata.related_memories as string) || "")
+                .split(",")
+                .filter(Boolean),
+              link.targetId,
+            ]),
+          ].join(","),
+        },
+      ],
+    });
+  }
+}
+
 export async function getMemoryStats(): Promise<{
   total: number;
   byType: Record<MemoryType, number>;

@@ -20,7 +20,14 @@ import {
   findSimilarMemories,
   consolidateMemories,
   supersedeMemory,
+  getAllMemoriesWithEmbeddings,
+  addMemoryLink,
 } from "./db.js";
+import {
+  analyzeGraphEnrichment,
+  proposedLinkToMemoryLink,
+  type ProposedLink,
+} from "./graph-enrichment.js";
 import { config, updateConfig } from "./config.js";
 import type { Memory, MemoryType, DreamOperation } from "./types.js";
 import {
@@ -106,6 +113,11 @@ async function main() {
 
     case "inject-founding":
       await cmdInjectFounding(args[1]);
+      break;
+
+    case "enrich":
+    case "link":
+      await cmdEnrich(args.slice(1));
       break;
 
     case "help":
@@ -738,6 +750,167 @@ async function cmdInjectFounding(file: string) {
   }
 }
 
+// ============================================================================
+// Graph Enrichment Commands
+// ============================================================================
+
+async function cmdEnrich(args: string[]) {
+  const dryRun = args.includes("--dry-run");
+  const apply = args.includes("--apply");
+  const minSim = args.find(a => a.startsWith("--min-similarity="));
+  const maxLinks = args.find(a => a.startsWith("--max-links="));
+
+  const minSimilarity = minSim ? parseFloat(minSim.split("=")[1]) : 0.5;
+  const maxLinksPerMemory = maxLinks ? parseInt(maxLinks.split("=")[1]) : 5;
+
+  console.log("╔══════════════════════════════════════════════════════════════╗");
+  console.log("║              GRAPH ENRICHMENT - Thought Topology              ║");
+  console.log("╚══════════════════════════════════════════════════════════════╝\n");
+
+  console.log("Loading memories with embeddings...");
+  const memories = await getAllMemoriesWithEmbeddings();
+
+  if (memories.length === 0) {
+    console.log("No memories found.");
+    return;
+  }
+
+  console.log(`Found ${memories.length} memories. Analyzing graph structure...\n`);
+
+  const result = analyzeGraphEnrichment(memories, {
+    minSimilarity,
+    maxLinksPerMemory,
+  });
+
+  // Display cluster analysis
+  console.log("🏘️  LOCALITIES (Semantic Clusters)");
+  console.log("─".repeat(60));
+  console.log(`Found ${result.clustersFound} clusters\n`);
+
+  // Sort clusters by size
+  const sortedClusters = Array.from(result.clusters.entries())
+    .sort((a, b) => b[1].length - a[1].length);
+
+  for (const [clusterId, memberIds] of sortedClusters.slice(0, 10)) {
+    const members = memberIds.map(id => memories.find(m => m.id === id)!).filter(Boolean);
+    if (members.length === 0) continue;
+
+    // Get dominant type in cluster
+    const typeCounts: Record<string, number> = {};
+    for (const m of members) {
+      typeCounts[m.type] = (typeCounts[m.type] || 0) + 1;
+    }
+    const dominantType = Object.entries(typeCounts)
+      .sort((a, b) => b[1] - a[1])[0][0];
+
+    console.log(`  Cluster ${clusterId} (${members.length} memories, mostly ${dominantType})`);
+
+    // Show sample content
+    for (const m of members.slice(0, 2)) {
+      const preview = m.content.slice(0, 50).replace(/\n/g, " ");
+      console.log(`    • [${m.type}] ${preview}...`);
+    }
+    if (members.length > 2) {
+      console.log(`    ... and ${members.length - 2} more`);
+    }
+    console.log();
+  }
+
+  // Display highway nodes
+  console.log("🛣️  HIGHWAYS (Bridge Nodes)");
+  console.log("─".repeat(60));
+  console.log(`Identified ${result.highwaysIdentified} highway memories\n`);
+
+  for (const highwayId of result.highways.slice(0, 5)) {
+    const memory = memories.find(m => m.id === highwayId);
+    if (!memory) continue;
+
+    const preview = memory.content.slice(0, 60).replace(/\n/g, " ");
+    console.log(`  🔗 [${memory.type}] ${preview}...`);
+  }
+
+  // Display proposed links
+  console.log("\n\n📊 PROPOSED LINKS");
+  console.log("─".repeat(60));
+  console.log(`Total links to create: ${result.linksProposed}`);
+  console.log(`  Cross-cluster bridges: ${result.crossClusterLinks}`);
+  console.log(`  Highway connections: ${result.highwayLinks}\n`);
+
+  // Group links by type
+  const byType: Record<string, ProposedLink[]> = {};
+  for (const link of result.proposedLinks) {
+    byType[link.type] = byType[link.type] || [];
+    byType[link.type].push(link);
+  }
+
+  console.log("Link types:");
+  for (const [type, links] of Object.entries(byType).sort((a, b) => b[1].length - a[1].length)) {
+    console.log(`  ${type}: ${links.length}`);
+  }
+
+  // Show sample links
+  console.log("\nSample proposed links:");
+  for (const link of result.proposedLinks.slice(0, 10)) {
+    const source = memories.find(m => m.id === link.sourceId);
+    const target = memories.find(m => m.id === link.targetId);
+    if (!source || !target) continue;
+
+    const sourcePreview = source.content.slice(0, 30).replace(/\n/g, " ");
+    const targetPreview = target.content.slice(0, 30).replace(/\n/g, " ");
+    const icon = link.isCrossCluster ? "🌉" : link.isHighwayConnection ? "🛣️" : "→";
+
+    console.log(`  ${sourcePreview}...`);
+    console.log(`    ${icon} --[${link.type}]--> ${targetPreview}...`);
+    console.log(`       (similarity: ${(link.similarity * 100).toFixed(1)}%, strength: ${(link.strength * 100).toFixed(1)}%)`);
+    console.log();
+  }
+
+  // Summary
+  console.log("\n" + "═".repeat(60));
+  console.log("ENRICHMENT SUMMARY");
+  console.log(`  Current link density: ${((memories.filter(m => m.related_memories && m.related_memories.length > 0).length / memories.length) * 100).toFixed(1)}%`);
+  console.log(`  Proposed new links: ${result.linksProposed}`);
+  console.log(`  Estimated new link density: ${(((memories.length + result.linksProposed) / memories.length / memories.length) * 100).toFixed(1)}%`);
+
+  if (dryRun && !apply) {
+    console.log("\n⚠️  DRY RUN - No changes made.");
+    console.log("   Run with --apply to create the links.");
+    return;
+  }
+
+  if (apply) {
+    console.log("\n🔨 APPLYING LINKS...");
+    let created = 0;
+    let errors = 0;
+
+    for (const proposed of result.proposedLinks) {
+      try {
+        await addMemoryLink(proposed.sourceId, {
+          targetId: proposed.targetId,
+          type: proposed.type,
+          reason: proposed.reason,
+          strength: proposed.strength,
+          createdBy: "graph-enrichment",
+        });
+        created++;
+
+        if (created % 50 === 0) {
+          console.log(`  Created ${created} links...`);
+        }
+      } catch (error) {
+        errors++;
+      }
+    }
+
+    console.log(`\n✅ Created ${created} links.`);
+    if (errors > 0) {
+      console.log(`⚠️  ${errors} errors encountered.`);
+    }
+  } else {
+    console.log("\nRun with --dry-run to preview or --apply to create links.");
+  }
+}
+
 function printHelp() {
   console.log(`
 Claude Memory CLI - Digital Soul Management
@@ -771,6 +944,13 @@ DREAM STATE (Soul Reorganization):
                      Add --dry-run to preview changes
   inject-founding    Load foundational memories from founding-memories.md
                      These define identity, goals, values, constraints
+
+GRAPH ENRICHMENT (Thought Topology):
+  enrich [options]   Analyze and create links between memories
+                     --dry-run    Preview without making changes
+                     --apply      Create the proposed links
+                     --min-similarity=0.5   Minimum similarity threshold
+                     --max-links=5          Max links per memory
 
   help               Show this help
 
