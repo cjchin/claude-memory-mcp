@@ -167,7 +167,7 @@ server.tool(
     query: z.string().describe("What to search for (semantic search)"),
     limit: z.number().optional().default(5).describe("Max results"),
     types: z
-      .array(z.enum(["decision", "pattern", "learning", "context", "preference", "summary", "todo", "reference"]))
+      .array(z.enum(["decision", "pattern", "learning", "context", "preference", "summary", "todo", "reference", "shadow"]))
       .optional()
       .describe("Filter by memory types"),
     tags: z.array(z.string()).optional().describe("Filter by tags"),
@@ -260,7 +260,7 @@ server.tool(
     id: z.string().describe("Memory ID to update"),
     content: z.string().optional().describe("New content"),
     type: z
-      .enum(["decision", "pattern", "learning", "context", "preference", "todo", "reference"])
+      .enum(["decision", "pattern", "learning", "context", "preference", "todo", "reference", "shadow"])
       .optional(),
     tags: z.array(z.string()).optional(),
     importance: z.number().min(1).max(5).optional(),
@@ -294,7 +294,7 @@ server.tool(
     limit: z.number().optional().default(20),
     project: z.string().optional(),
     type: z
-      .enum(["decision", "pattern", "learning", "context", "preference", "summary", "todo", "reference"])
+      .enum(["decision", "pattern", "learning", "context", "preference", "summary", "todo", "reference", "shadow"])
       .optional(),
     sort_by: z.enum(["recent", "importance", "accessed"]).optional().default("recent"),
   },
