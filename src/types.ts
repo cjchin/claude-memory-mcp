@@ -9,7 +9,8 @@ export type MemoryType =
   | "reference"     // External references, docs, links
   | "foundational"  // Core identity, goals, values - never decays
   | "contradiction" // Detected conflict between memories
-  | "superseded";   // Memory replaced by newer information
+  | "superseded"    // Memory replaced by newer information
+  | "shadow";       // Auto-promoted from shadow log (ephemeral working memory)
 
 // Memory layer in the soul architecture
 export type MemoryLayer =
@@ -74,7 +75,7 @@ export interface Memory {
   supersedes?: string;           // ID of memory this replaces
   superseded_by?: string;        // ID of memory that replaced this
   confidence?: number;           // 0-1, how certain we are
-  source?: "human" | "inferred" | "consolidated"; // Origin of memory
+  source?: "human" | "inferred" | "consolidated" | "llm_consolidated" | "conscious_merge" | "conscious_consolidation"; // Origin of memory
 }
 
 export interface Session {
@@ -107,6 +108,7 @@ export const MEMORY_TYPE_DESCRIPTIONS: Record<MemoryType, string> = {
   foundational: "Core identity, goals, values - immortal truths",
   contradiction: "Detected conflict requiring resolution",
   superseded: "Historical memory replaced by newer information",
+  shadow: "Auto-promoted from shadow log working memory",
 };
 
 export const DEFAULT_TAGS = [
@@ -167,4 +169,64 @@ export interface FoundationalMemory extends Memory {
   category: FoundationalCategory;
   importance: 5;  // Always maximum
   confidence: 1;  // Always certain
+}
+
+// ============================================================================
+// Shadow Log Types - Ephemeral Working Memory
+// ============================================================================
+
+/**
+ * Activity types tracked in the shadow log
+ */
+export type ShadowActivityType =
+  | "file_read"      // Reading a file
+  | "search"         // Grep, glob, or semantic search
+  | "tool_use"       // Using any MCP tool
+  | "topic_mention"  // Topic referenced in conversation
+  | "memory_access"; // Accessing long-term memory (recall, remember, get_memory)
+
+/**
+ * Status of a shadow entry
+ */
+export type ShadowStatus =
+  | "active"    // Currently accumulating activity
+  | "idle"      // No recent activity, candidate for promotion
+  | "promoted"  // Converted to long-term memory
+  | "decayed";  // Expired without promotion
+
+/**
+ * A single activity recorded in the shadow log
+ */
+export interface ShadowActivity {
+  timestamp: string;             // ISO timestamp
+  type: ShadowActivityType;      // What kind of activity
+  detail: string;                // File path, search query, tool name, etc.
+  tokens?: number;               // Estimated tokens for this activity
+}
+
+/**
+ * A shadow entry - ephemeral working memory that can be promoted to long-term
+ */
+export interface ShadowEntry {
+  id: string;                    // shadow_<timestamp>_<random>
+  session_id: string;            // Which Claude session
+  topic: string;                 // Detected/inferred topic
+
+  // Timing
+  created_at: string;            // When this shadow started
+  last_activity: string;         // Last activity timestamp
+
+  // Accumulated activity
+  activities: ShadowActivity[];  // All recorded activities
+  tokens: number;                // Total density measure
+
+  // State
+  status: ShadowStatus;          // Current status
+
+  // Compression (generated when idle/promoted)
+  summary?: string;              // Summary of activity
+
+  // Metadata
+  project?: string;              // Project context
+  promoted_memory_id?: string;   // ID of memory created on promotion
 }

@@ -4,10 +4,25 @@
  * Implements the "sleep" phase of the soul architecture - batch processing
  * that reorganizes, consolidates, and maintains memory health during offline periods.
  * 
+ * Supports two modes:
+ * - Heuristic: Fast, rule-based processing (default)
+ * - LLM-assisted: Uses configured LLM for judgment (when dream_use_llm=true)
+ * 
  * Designed to be triggered by CI/CD pipelines (GitHub Actions) on a schedule.
  */
 
 import { Memory, DreamOperation, DreamReport, FoundationalCategory, FoundationalMemory } from "./types.js";
+import { embed, cosineSimilarity } from "./embeddings.js";
+import { config } from "./config.js";
+import { 
+  getLLMProvider, 
+  isLLMAvailable, 
+  judgeContradiction, 
+  judgeConsolidation,
+  type LLMProvider,
+  type ContradictionJudgment,
+  type ConsolidationJudgment,
+} from "./llm.js";
 
 // Database operations will be injected to avoid circular dependencies
 export interface DreamDbOperations {
@@ -146,17 +161,176 @@ export interface ConsolidationCandidate {
   memories: Memory[];
   similarity: number;
   suggestedMerge: string;
+  mergeRationale: string;
 }
 
 /**
- * Find memories that could be consolidated into one
+ * Memory with pre-computed embedding for consolidation analysis
+ */
+export interface MemoryWithEmbedding {
+  memory: Memory;
+  embedding: number[];
+}
+
+/**
+ * Find memories that could be consolidated into one using SEMANTIC similarity.
+ * This version uses embeddings for accurate similarity detection.
+ */
+export async function findConsolidationCandidatesWithEmbeddings(
+  memories: Memory[],
+  similarityThreshold: number = 0.85
+): Promise<ConsolidationCandidate[]> {
+  if (memories.length < 2) return [];
+  
+  // Generate embeddings for all memories
+  const memoriesWithEmbeddings: MemoryWithEmbedding[] = [];
+  for (const memory of memories) {
+    const embedding = await embed(memory.content);
+    memoriesWithEmbeddings.push({ memory, embedding });
+  }
+  
+  return findConsolidationCandidatesFromEmbeddings(
+    memoriesWithEmbeddings,
+    similarityThreshold
+  );
+}
+
+/**
+ * Find consolidation candidates from pre-embedded memories (faster for bulk operations)
+ */
+export function findConsolidationCandidatesFromEmbeddings(
+  memoriesWithEmbeddings: MemoryWithEmbedding[],
+  similarityThreshold: number = 0.85
+): ConsolidationCandidate[] {
+  const candidates: ConsolidationCandidate[] = [];
+  const processed = new Set<string>();
+  
+  for (let i = 0; i < memoriesWithEmbeddings.length; i++) {
+    const { memory: memA, embedding: embA } = memoriesWithEmbeddings[i];
+    if (processed.has(memA.id)) continue;
+    
+    const cluster: MemoryWithEmbedding[] = [memoriesWithEmbeddings[i]];
+    let totalSimilarity = 0;
+    let similarityCount = 0;
+    
+    for (let j = i + 1; j < memoriesWithEmbeddings.length; j++) {
+      const { memory: memB, embedding: embB } = memoriesWithEmbeddings[j];
+      if (processed.has(memB.id)) continue;
+      
+      const similarity = cosineSimilarity(embA, embB);
+      
+      if (similarity >= similarityThreshold) {
+        cluster.push(memoriesWithEmbeddings[j]);
+        processed.add(memB.id);
+        totalSimilarity += similarity;
+        similarityCount++;
+      }
+    }
+    
+    if (cluster.length > 1) {
+      const avgSimilarity = similarityCount > 0 ? totalSimilarity / similarityCount : similarityThreshold;
+      const mergeResult = intelligentMerge(cluster.map(c => c.memory));
+      
+      candidates.push({
+        memories: cluster.map(c => c.memory),
+        similarity: avgSimilarity,
+        suggestedMerge: mergeResult.content,
+        mergeRationale: mergeResult.rationale,
+      });
+    }
+    
+    processed.add(memA.id);
+  }
+  
+  return candidates;
+}
+
+/**
+ * Intelligently merge multiple memories by combining unique information.
+ * Instead of just picking the longest, this extracts and synthesizes content.
+ */
+export function intelligentMerge(memories: Memory[]): { content: string; rationale: string } {
+  if (memories.length === 0) {
+    return { content: "", rationale: "No memories to merge" };
+  }
+  if (memories.length === 1) {
+    return { content: memories[0].content, rationale: "Single memory, no merge needed" };
+  }
+  
+  // Sort by importance (desc), then by length (desc), then by recency (desc)
+  const sorted = [...memories].sort((a, b) => {
+    if (b.importance !== a.importance) return b.importance - a.importance;
+    if (b.content.length !== a.content.length) return b.content.length - a.content.length;
+    return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+  });
+  
+  // Primary memory is the "best" one
+  const primary = sorted[0];
+  const others = sorted.slice(1);
+  
+  // Extract unique phrases/sentences from other memories not in primary
+  const primarySentences = extractSentences(primary.content);
+  const primaryWords = new Set(primary.content.toLowerCase().split(/\W+/).filter(w => w.length > 3));
+  
+  const uniqueAdditions: string[] = [];
+  
+  for (const other of others) {
+    const otherSentences = extractSentences(other.content);
+    
+    for (const sentence of otherSentences) {
+      // Check if this sentence adds novel information
+      const sentenceWords = new Set(sentence.toLowerCase().split(/\W+/).filter(w => w.length > 3));
+      const overlap = [...sentenceWords].filter(w => primaryWords.has(w)).length;
+      const novelty = 1 - (overlap / Math.max(sentenceWords.size, 1));
+      
+      // If sentence has significant novel content (>30% new words)
+      if (novelty > 0.3 && sentence.length > 10) {
+        // Check it's not already added
+        const isDuplicate = uniqueAdditions.some(existing => 
+          computeTextSimilarity(existing, sentence) > 0.7
+        );
+        
+        if (!isDuplicate) {
+          uniqueAdditions.push(sentence.trim());
+        }
+      }
+    }
+  }
+  
+  // Construct merged content
+  let mergedContent = primary.content;
+  
+  if (uniqueAdditions.length > 0) {
+    // Add unique info as supplementary
+    mergedContent += "\n\n[Additional context: " + uniqueAdditions.join(". ") + "]";
+  }
+  
+  const rationale = uniqueAdditions.length > 0
+    ? `Combined ${memories.length} memories. Base: most important/detailed. Added ${uniqueAdditions.length} unique detail(s) from others.`
+    : `Kept most important/detailed memory (${memories.length - 1} near-duplicates removed).`;
+  
+  return { content: mergedContent, rationale };
+}
+
+/**
+ * Extract sentences from text
+ */
+function extractSentences(text: string): string[] {
+  // Split on sentence boundaries
+  return text
+    .split(/[.!?]+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 5);
+}
+
+/**
+ * Find memories that could be consolidated (sync version using text similarity).
+ * Use findConsolidationCandidatesWithEmbeddings for better accuracy.
  */
 export function findConsolidationCandidates(
   memories: Memory[],
   similarityThreshold: number = 0.85
 ): ConsolidationCandidate[] {
-  // This would use embeddings in real implementation
-  // For now, use content similarity heuristics
   const candidates: ConsolidationCandidate[] = [];
   const processed = new Set<string>();
   
@@ -177,10 +351,12 @@ export function findConsolidationCandidates(
     }
     
     if (cluster.length > 1) {
+      const mergeResult = intelligentMerge(cluster);
       candidates.push({
         memories: cluster,
-        similarity: cluster.length > 1 ? similarityThreshold : 1,
-        suggestedMerge: suggestMergedContent(cluster),
+        similarity: similarityThreshold,
+        suggestedMerge: mergeResult.content,
+        mergeRationale: mergeResult.rationale,
       });
     }
     
@@ -201,12 +377,6 @@ function computeTextSimilarity(a: string, b: string): number {
   return intersection.size / union.size;
 }
 
-function suggestMergedContent(memories: Memory[]): string {
-  // Take the longest, most detailed memory as base
-  const sorted = [...memories].sort((a, b) => b.content.length - a.content.length);
-  return sorted[0].content;
-}
-
 // ============================================================================
 // Importance Decay
 // ============================================================================
@@ -221,6 +391,14 @@ export interface DecayConfig {
 const DEFAULT_DECAY_CONFIG: DecayConfig = {
   halfLifeDays: 30,
   accessBoostDays: 7,
+  minImportance: 1,
+  exemptTypes: ["foundational", "contradiction"],
+};
+
+// Shadow memories decay faster (half the normal half-life)
+const SHADOW_DECAY_CONFIG: DecayConfig = {
+  halfLifeDays: 15,  // Faster decay for auto-promoted shadows
+  accessBoostDays: 5,
   minImportance: 1,
   exemptTypes: ["foundational", "contradiction"],
 };
@@ -414,41 +592,99 @@ export function runDreamCycle(
 
 /**
  * Run a dream cycle with actual database mutations
+ * 
+ * If config.dream_use_llm is true, uses configured LLM for judgment.
+ * Otherwise, uses heuristic-based decisions.
  */
 export async function runDreamCycleWithMutations(
   memories: Memory[],
-  config: DreamConfig,
+  dreamConfig: DreamConfig,
   db: DreamDbOperations
 ): Promise<DreamReport> {
-  // First do dry-run analysis
-  const report = runDreamCycle(memories, { ...config, dryRun: true });
+  // Check if LLM is configured and available
+  const useLLM = config.dream_use_llm && await isLLMAvailable();
+  const llmProvider = useLLM ? getLLMProvider() : null;
   
-  if (config.dryRun) {
+  // First do dry-run analysis
+  const report = runDreamCycle(memories, { ...dreamConfig, dryRun: true });
+  
+  // Track LLM usage in report
+  (report as any).llm_assisted = useLLM;
+  if (useLLM && llmProvider) {
+    (report as any).llm_provider = llmProvider.name;
+  }
+  
+  if (dreamConfig.dryRun) {
     return report;
   }
   
-  // Apply decay mutations
-  if (config.operations.includes("decay")) {
+  // Apply decay mutations (no LLM needed - mathematical)
+  if (dreamConfig.operations.includes("decay")) {
     for (const memory of memories) {
-      if (config.decayConfig?.exemptTypes?.includes(memory.type)) continue;
-      
-      const newImportance = calculateDecay(memory, config.decayConfig);
+      if (dreamConfig.decayConfig?.exemptTypes?.includes(memory.type)) continue;
+
+      // Shadow memories decay faster unless they've been accessed frequently
+      const decayConfig = memory.type === "shadow"
+        ? SHADOW_DECAY_CONFIG
+        : dreamConfig.decayConfig;
+
+      const newImportance = calculateDecay(memory, decayConfig);
       if (Math.abs(newImportance - memory.importance) > 0.1) {
-        await db.updateMemory(memory.id, { 
-          importance: Math.round(newImportance * 10) / 10 
+        await db.updateMemory(memory.id, {
+          importance: Math.round(newImportance * 10) / 10
         });
       }
     }
   }
   
   // Apply contradiction resolution
-  if (config.operations.includes("contradiction") && report.contradictions_found.length > 0) {
+  if (dreamConfig.operations.includes("contradiction") && report.contradictions_found.length > 0) {
     for (const conflict of report.contradictions_found) {
-      if (conflict.conflict_type === "temporal") {
-        // Newer supersedes older - find which is which
-        const memA = memories.find(m => m.id === conflict.memory_a);
-        const memB = memories.find(m => m.id === conflict.memory_b);
-        if (memA && memB) {
+      const memA = memories.find(m => m.id === conflict.memory_a);
+      const memB = memories.find(m => m.id === conflict.memory_b);
+      
+      if (!memA || !memB) continue;
+      
+      if (useLLM) {
+        // Use LLM judgment for contradiction resolution
+        const judgment = await judgeContradiction(memA, memB, conflict.explanation);
+        
+        if (judgment.isRealConflict) {
+          switch (judgment.resolution) {
+            case "supersede_a":
+              await db.supersedeMemory(memA.id, memB.id);
+              break;
+            case "supersede_b":
+              await db.supersedeMemory(memB.id, memA.id);
+              break;
+            case "merge":
+              if (judgment.mergedContent) {
+                const mergedId = await db.saveMemory({
+                  content: judgment.mergedContent,
+                  type: memA.type,
+                  tags: [...new Set([...memA.tags, ...memB.tags])],
+                  timestamp: new Date().toISOString(),
+                  importance: Math.max(memA.importance, memB.importance),
+                  source: "consolidated",
+                  layer: memA.layer,
+                  valid_from: new Date().toISOString(),
+                  metadata: {
+                    llm_merged_from: [memA.id, memB.id],
+                    llm_reasoning: judgment.reasoning,
+                  },
+                });
+                await db.supersedeMemory(memA.id, mergedId);
+                await db.supersedeMemory(memB.id, mergedId);
+              }
+              break;
+            case "keep_both":
+              // No action needed
+              break;
+          }
+        }
+      } else {
+        // Heuristic fallback: temporal contradictions resolved by recency
+        if (conflict.conflict_type === "temporal") {
           const aTime = new Date(memA.timestamp).getTime();
           const bTime = new Date(memB.timestamp).getTime();
           
@@ -458,24 +694,43 @@ export async function runDreamCycleWithMutations(
             await db.supersedeMemory(memA.id, memB.id);
           }
         }
+        // Direct contradictions are flagged but not auto-resolved without LLM
       }
-      // Direct contradictions are flagged but not auto-resolved
     }
   }
   
   // Apply consolidation (merge similar memories)
-  if (config.operations.includes("consolidate")) {
+  if (dreamConfig.operations.includes("consolidate")) {
     const candidates = findConsolidationCandidates(
       memories, 
-      config.consolidationThreshold ?? 0.85
+      dreamConfig.consolidationThreshold ?? 0.85
     );
     
     for (const candidate of candidates) {
       if (candidate.memories.length < 2) continue;
       
-      // Keep the most important/recent, merge content
+      let finalContent: string;
+      let finalRationale: string;
+      
+      if (useLLM) {
+        // Use LLM to synthesize merged content
+        const judgment = await judgeConsolidation(candidate.memories, candidate.suggestedMerge);
+        
+        if (!judgment.shouldMerge) {
+          // LLM says don't merge these
+          continue;
+        }
+        
+        finalContent = judgment.mergedContent || candidate.suggestedMerge;
+        finalRationale = judgment.reasoning;
+      } else {
+        // Use heuristic merge
+        finalContent = candidate.suggestedMerge;
+        finalRationale = candidate.mergeRationale;
+      }
+      
+      // Keep the most important/recent as base
       const sorted = [...candidate.memories].sort((a, b) => {
-        // Priority: importance, then recency
         if (b.importance !== a.importance) return b.importance - a.importance;
         return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
       });
@@ -485,16 +740,18 @@ export async function runDreamCycleWithMutations(
       
       // Create consolidated memory
       const consolidatedId = await db.saveMemory({
-        content: candidate.suggestedMerge,
+        content: finalContent,
         type: keeper.type,
         tags: [...new Set(candidate.memories.flatMap(m => m.tags))],
         timestamp: new Date().toISOString(),
         importance: Math.max(...candidate.memories.map(m => m.importance)),
-        source: "consolidated",
+        source: useLLM ? "llm_consolidated" : "consolidated",
         layer: keeper.layer,
         valid_from: new Date().toISOString(),
         metadata: {
           consolidated_from: candidate.memories.map(m => m.id),
+          merge_rationale: finalRationale,
+          llm_assisted: useLLM,
         },
       });
       
@@ -532,4 +789,6 @@ function findAllContradictions(memories: Memory[]): ContradictionCandidate[] {
 
 export {
   DEFAULT_DECAY_CONFIG,
+  SHADOW_DECAY_CONFIG,
+  computeTextSimilarity,
 };
