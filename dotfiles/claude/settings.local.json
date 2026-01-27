@@ -1,0 +1,6 @@
+{
+  "defaultMode": "acceptEdits",
+  "alwaysThinkingEnabled": true,
+  "autoUpdatesChannel": "stable",
+  "cleanupPeriodDays": 30
+}
