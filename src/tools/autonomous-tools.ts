@@ -15,7 +15,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { saveMemory, searchMemories, getMemory, listMemories, getMemoryStats, getCurrentSessionId, addMemoryToSession, findSimilarMemories } from "../db.js";
+import { saveMemory, searchMemories, getMemory, listMemories, getMemoryStats, getCurrentSessionId, addMemoryToSession } from "../db.js";
 import { config } from "../config.js";
 import { detectMemoryType, detectTags, estimateImportance } from "../intelligence.js";
 import { detectTrigger, extractMemorablePoints, detectClaudeInsights, analyzeConversationTurn, detectSemanticSignal } from "../autonomous.js";
@@ -23,6 +23,7 @@ import { SmartAlignmentEngine } from "../alignment.js";
 import type { MemoryType } from "../types.js";
 import { listActiveShadows, getShadowEntry, checkPromotionThresholds, getRecentlyPromoted, finalizeShadow, getActiveMinutes, formatShadowForClaude, getSessionShadows } from "../shadow-log.js";
 import { recordToolActivity } from "./shadow-tools.js";
+import { checkDuplicates } from "../dedupe.js";
 
 const alignmentEngine = new SmartAlignmentEngine({ autoSaveEnabled: true, userTriggerThreshold: 0.7, claudeInsightThreshold: 0.75 });
 
@@ -73,12 +74,12 @@ export function registerAutonomousTools(server: McpServer): void {
       if (auto_save && summary) { const sid = await saveMemory({ content: `Session checkpoint: ${summary}`, type: "context", tags: ["checkpoint", "session-progress"], importance: 3, project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString() }); await addMemoryToSession(sid); results.push(`\u{1f4cd} Checkpoint: ${summary}`); results.push(`   Saved as: ${sid}\n`); }
       if (auto_save && insights?.length) {
         results.push(`\u{1f4a1} Insights saved:`);
-        for (const insight of insights) { const sim = await findSimilarMemories(insight, 0.85); if (sim.length > 0) { results.push(`   [SKIP] Already exists: "${insight.slice(0, 40)}..."`); continue; } const id = await saveMemory({ content: insight, type: "learning", tags: detectTags(insight), importance: estimateImportance(insight), project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString() }); await addMemoryToSession(id); results.push(`   \u2022 ${insight.slice(0, 50)}... \u2192 ${id}`); }
+        for (const insight of insights) { const sim = await checkDuplicates(insight, "STANDARD"); if (sim.length > 0) { results.push(`   [SKIP] Already exists: "${insight.slice(0, 40)}..."`); continue; } const id = await saveMemory({ content: insight, type: "learning", tags: detectTags(insight), importance: estimateImportance(insight), project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString() }); await addMemoryToSession(id); results.push(`   \u2022 ${insight.slice(0, 50)}... \u2192 ${id}`); }
         results.push("");
       }
       if (auto_save && next_steps?.length) {
         results.push(`\u{1f4cb} TODOs added:`);
-        for (const step of next_steps) { const sim = await findSimilarMemories(step, 0.85); if (sim.length > 0) { results.push(`   [SKIP] Already exists: "${step.slice(0, 40)}..."`); continue; } const id = await saveMemory({ content: step, type: "todo", tags: detectTags(step), importance: 4, project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString() }); await addMemoryToSession(id); results.push(`   \u25a1 ${step.slice(0, 50)}... \u2192 ${id}`); }
+        for (const step of next_steps) { const sim = await checkDuplicates(step, "STANDARD"); if (sim.length > 0) { results.push(`   [SKIP] Already exists: "${step.slice(0, 40)}..."`); continue; } const id = await saveMemory({ content: step, type: "todo", tags: detectTags(step), importance: 4, project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString() }); await addMemoryToSession(id); results.push(`   \u25a1 ${step.slice(0, 50)}... \u2192 ${id}`); }
         results.push("");
       }
       // Surface session shadows for Claude's reflection
@@ -111,7 +112,7 @@ export function registerAutonomousTools(server: McpServer): void {
       if (points.length === 0) { return { content: [{ type: "text" as const, text: "No memorable points detected in the provided content." }] }; }
       const results: string[] = [];
       for (const point of points) {
-        if (auto_save) { const sim = await findSimilarMemories(point.content, 0.85); if (sim.length > 0) { results.push(`[SKIP] Already exists: "${point.content.slice(0, 50)}..."`); continue; } const id = await saveMemory({ content: point.content, type: point.type, tags: point.tags, importance: point.importance, project: config.current_project, session_id: getCurrentSessionId(), timestamp: new Date().toISOString() }); await addMemoryToSession(id); results.push(`[SAVED] ${point.type.toUpperCase()}: "${point.content.slice(0, 50)}..." \u2192 ${id}`);
+        if (auto_save) { const sim = await checkDuplicates(point.content, "STANDARD"); if (sim.length > 0) { results.push(`[SKIP] Already exists: "${point.content.slice(0, 50)}..."`); continue; } const id = await saveMemory({ content: point.content, type: point.type, tags: point.tags, importance: point.importance, project: config.current_project, session_id: getCurrentSessionId(), timestamp: new Date().toISOString() }); await addMemoryToSession(id); results.push(`[SAVED] ${point.type.toUpperCase()}: "${point.content.slice(0, 50)}..." \u2192 ${id}`);
         } else { results.push(`[DETECTED] ${point.type.toUpperCase()} (imp: ${point.importance}): "${point.content.slice(0, 80)}..."`); }
       }
       return { content: [{ type: "text" as const, text: `Synthesis Complete\n==================\n\nExtracted ${points.length} memorable points:\n\n` + results.join("\n") }] };
@@ -175,7 +176,7 @@ export function registerAutonomousTools(server: McpServer): void {
   server.tool("analyze_conversation", { user_message: z.string().describe("The user message in the conversation"), claude_response: z.string().describe("Claude response to analyze for insights"), auto_save: z.boolean().optional().describe("Automatically save detected memories (default: false)") },
     async ({ user_message, claude_response, auto_save = false }) => {
       const result = alignmentEngine.analyze(user_message, claude_response); let savedIds: string[] = [];
-      if (auto_save && result.memoriesToCreate.length > 0) { for (const candidate of result.memoriesToCreate) { const sim = await findSimilarMemories(candidate.content, 0.9); if (sim.length > 0) continue; const id = await saveMemory({ content: candidate.content, type: candidate.type, tags: candidate.tags, importance: candidate.importance, project: config.current_project, session_id: getCurrentSessionId(), timestamp: new Date().toISOString(), valid_from: new Date().toISOString(), source: candidate.source === 'claude' ? 'inferred' : 'human', confidence: candidate.confidence }); savedIds.push(id); await addMemoryToSession(id); } }
+      if (auto_save && result.memoriesToCreate.length > 0) { for (const candidate of result.memoriesToCreate) { const sim = await checkDuplicates(candidate.content, "STRICT"); if (sim.length > 0) continue; const id = await saveMemory({ content: candidate.content, type: candidate.type, tags: candidate.tags, importance: candidate.importance, project: config.current_project, session_id: getCurrentSessionId(), timestamp: new Date().toISOString(), valid_from: new Date().toISOString(), source: candidate.source === 'claude' ? 'inferred' : 'human', confidence: candidate.confidence }); savedIds.push(id); await addMemoryToSession(id); } }
       const ms = result.memoriesToCreate.map((m, i) => `${i + 1}. [${m.type}] ${m.content.slice(0, 80)}... (conf: ${Math.round(m.confidence * 100)}%, src: ${m.source})`).join('\n');
       const rs = result.recallQueries.length > 0 ? `\nRecall queries: ${result.recallQueries.join(', ')}` : '';
       const ss = savedIds.length > 0 ? `\n\nAuto-saved ${savedIds.length} memories: ${savedIds.join(', ')}` : '';

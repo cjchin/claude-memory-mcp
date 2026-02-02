@@ -18,6 +18,7 @@ import {
   getCurrentSessionId,
 } from "../db.js";
 import { MEMORY_TYPE_DESCRIPTIONS } from "../types.js";
+import { DEDUPE_THRESHOLDS } from "../dedupe.js";
 
 /**
  * Register utility tools with the MCP server
@@ -47,7 +48,8 @@ export function registerUtilityTools(server: McpServer): void {
     "find_similar",
     {
       content: z.string().describe("Content to find similar memories for"),
-      threshold: z.number().min(0).max(1).optional().default(0.7),
+      threshold: z.number().min(0).max(1).optional().default(DEDUPE_THRESHOLDS.LOOSE)
+        .describe("Similarity threshold (default: 0.7 LOOSE)"),
     },
     async ({ content, threshold }) => {
       const similar = await findSimilarMemories(content, threshold);

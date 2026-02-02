@@ -182,39 +182,49 @@ export function registerGraphTools(server: McpServer): void {
         .describe("Create reverse link too"),
     },
     async ({ source_id, target_id, link_type, reason, strength, bidirectional }) => {
-      const source = await getMemory(source_id);
-      const target = await getMemory(target_id);
+      try {
+        const source = await getMemory(source_id);
+        const target = await getMemory(target_id);
 
-      if (!source) {
-        return { content: [{ type: "text" as const, text: `❌ Source memory not found: ${source_id}` }] };
-      }
-      if (!target) {
-        return { content: [{ type: "text" as const, text: `❌ Target memory not found: ${target_id}` }] };
-      }
+        if (!source) {
+          return { content: [{ type: "text" as const, text: `❌ Source memory not found: ${source_id}` }] };
+        }
+        if (!target) {
+          return { content: [{ type: "text" as const, text: `❌ Target memory not found: ${target_id}` }] };
+        }
 
-      await addMemoryLink(source_id, {
-        targetId: target_id,
-        type: link_type,
-        reason: reason || `${link_type} relationship`,
-        strength,
-        createdBy: "conscious",
-      });
-
-      let resultText = `✅ Created link: ${source_id.slice(0, 12)}... --[${link_type}]--> ${target_id.slice(0, 12)}...`;
-
-      if (bidirectional) {
-        const reverseType = getReverseLinkType(link_type);
-        await addMemoryLink(target_id, {
-          targetId: source_id,
-          type: reverseType,
-          reason: reason || `${reverseType} relationship (reverse)`,
+        await addMemoryLink(source_id, {
+          targetId: target_id,
+          type: link_type,
+          reason: reason || `${link_type} relationship`,
           strength,
           createdBy: "conscious",
         });
-        resultText += `\n✅ Created reverse: ${target_id.slice(0, 12)}... --[${reverseType}]--> ${source_id.slice(0, 12)}...`;
-      }
 
-      return { content: [{ type: "text" as const, text: resultText }] };
+        let resultText = `✅ Created link: ${source_id.slice(0, 12)}... --[${link_type}]--> ${target_id.slice(0, 12)}...`;
+
+        if (bidirectional) {
+          const reverseType = getReverseLinkType(link_type);
+          await addMemoryLink(target_id, {
+            targetId: source_id,
+            type: reverseType,
+            reason: reason || `${reverseType} relationship (reverse)`,
+            strength,
+            createdBy: "conscious",
+          });
+          resultText += `\n✅ Created reverse: ${target_id.slice(0, 12)}... --[${reverseType}]--> ${source_id.slice(0, 12)}...`;
+        }
+
+        return { content: [{ type: "text" as const, text: resultText }] };
+      } catch (error) {
+        console.error("Error creating memory link:", error);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `❌ Failed to create link: ${error instanceof Error ? error.message : String(error)}`
+          }]
+        };
+      }
     }
   );
 
@@ -226,13 +236,14 @@ export function registerGraphTools(server: McpServer): void {
         .describe("Which direction of links to show"),
     },
     async ({ memory_id, direction }) => {
-      const memory = await getMemory(memory_id);
-      if (!memory) {
-        return { content: [{ type: "text" as const, text: `❌ Memory not found: ${memory_id}` }] };
-      }
+      try {
+        const memory = await getMemory(memory_id);
+        if (!memory) {
+          return { content: [{ type: "text" as const, text: `❌ Memory not found: ${memory_id}` }] };
+        }
 
-      const sections: string[] = [];
-      sections.push(`🔗 LINKS FOR: "${memory.content.slice(0, 60)}..."\n`);
+        const sections: string[] = [];
+        sections.push(`🔗 LINKS FOR: "${memory.content.slice(0, 60)}..."\n`);
 
       if (direction === "outgoing" || direction === "both") {
         const outgoing = await getMemoryLinks(memory_id);
@@ -277,7 +288,16 @@ export function registerGraphTools(server: McpServer): void {
         }
       }
 
-      return { content: [{ type: "text" as const, text: sections.join("\n") }] };
+        return { content: [{ type: "text" as const, text: sections.join("\n") }] };
+      } catch (error) {
+        console.error("Error getting memory links:", error);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `❌ Failed to get links: ${error instanceof Error ? error.message : String(error)}`
+          }]
+        };
+      }
     }
   );
 }

@@ -23,13 +23,13 @@ import {
   getMemoryStats,
   getCurrentSessionId,
   addMemoryToSession,
-  findSimilarMemories,
 } from "../db.js";
 import { config } from "../config.js";
 import { detectMemoryType, detectTags, estimateImportance } from "../intelligence.js";
 import { cleanText, extractEntities, extractReasoning } from "../preprocess.js";
 import type { MemoryType } from "../types.js";
 import { recordToolActivity } from "./shadow-tools.js";
+import { checkDuplicates } from "../dedupe.js";
 
 export function registerCoreTools(server: McpServer): void {
   // Save a memory with auto-detection
@@ -51,8 +51,8 @@ export function registerCoreTools(server: McpServer): void {
       const extractedEntities = extractEntities(content);
       const extractedReasoning = extractReasoning(content);
 
-      // Check for duplicates first
-      const similar = await findSimilarMemories(cleanedContent, 0.9);
+      // Check for duplicates first (using STRICT threshold for explicit remember)
+      const similar = await checkDuplicates(cleanedContent, "STRICT");
       if (similar.length > 0) {
         return {
           content: [

@@ -31,14 +31,6 @@ import {
   type ConsolidationCandidate,
 } from "../dream.js";
 
-const consciousReviewState = {
-  contradictions: [] as ContradictionCandidate[],
-  consolidations: [] as ConsolidationCandidate[],
-  currentContradictionIndex: 0,
-  currentConsolidationIndex: 0,
-  initialized: false,
-};
-
 export function registerDreamTools(server: McpServer): void {
 // ============ DREAM STATE - MEMORY REORGANIZATION ============
 

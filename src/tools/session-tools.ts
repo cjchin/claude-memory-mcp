@@ -51,39 +51,49 @@ export function registerSessionTools(server: McpServer): void {
       summarize: z.boolean().optional().default(true).describe("Generate session summary"),
     },
     async ({ summarize }) => {
-      const sessionId = getCurrentSessionId();
+      try {
+        const sessionId = getCurrentSessionId();
 
-      let summaryText = "";
-      if (summarize) {
-        // Get memories from this session
-        const memories = await listMemories({ limit: 100 });
-        const sessionMemories = memories.filter((m) => m.session_id === sessionId);
+        let summaryText = "";
+        if (summarize) {
+          // Get memories from this session
+          const memories = await listMemories({ limit: 100 });
+          const sessionMemories = memories.filter((m) => m.session_id === sessionId);
 
-        if (sessionMemories.length >= config.session_summary_min_memories) {
-          summaryText = generateSessionSummary(sessionMemories);
+          if (sessionMemories.length >= config.session_summary_min_memories) {
+            summaryText = generateSessionSummary(sessionMemories);
 
-          // Save summary as a memory
-          await saveMemory({
-            content: `Session summary (${sessionId}):\n${summaryText}`,
-            type: "summary",
-            tags: ["session-summary"],
-            importance: 3,
-            project: config.current_project,
-            timestamp: new Date().toISOString(),
-          });
+            // Save summary as a memory
+            await saveMemory({
+              content: `Session summary (${sessionId}):\n${summaryText}`,
+              type: "summary",
+              tags: ["session-summary"],
+              importance: 3,
+              project: config.current_project,
+              timestamp: new Date().toISOString(),
+            });
+          }
         }
-      }
 
-      await endSession(summaryText);
+        await endSession(summaryText);
 
-      return {
-        content: [
-          {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Ended session ${sessionId}${summaryText ? `\n\nSummary:\n${summaryText}` : ""}`,
+            },
+          ],
+        };
+      } catch (error) {
+        console.error("Error ending session:", error);
+        return {
+          content: [{
             type: "text" as const,
-            text: `Ended session ${sessionId}${summaryText ? `\n\nSummary:\n${summaryText}` : ""}`,
-          },
-        ],
-      };
+            text: `❌ Failed to end session: ${error instanceof Error ? error.message : String(error)}`
+          }]
+        };
+      }
     }
   );
 }

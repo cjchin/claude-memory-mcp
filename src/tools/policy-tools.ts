@@ -246,6 +246,7 @@ export function registerPolicyTools(server: McpServer): void {
 
           let success = 0;
           let failed = 0;
+          const errors: string[] = [];
 
           for (const { memory_id, project } of assignments) {
             try {
@@ -253,11 +254,23 @@ export function registerPolicyTools(server: McpServer): void {
               success++;
             } catch (e) {
               failed++;
+              const errorMsg = e instanceof Error ? e.message : String(e);
+              errors.push(`${memory_id.slice(0, 12)}...: ${errorMsg}`);
+              console.error(`Failed to assign project to memory ${memory_id}:`, e);
             }
           }
 
           sections.push(`✅ Applied ${success} assignments`);
-          if (failed > 0) sections.push(`❌ Failed: ${failed}`);
+          if (failed > 0) {
+            sections.push(`❌ Failed: ${failed}`);
+            sections.push(`\nFailed assignments:`);
+            for (const err of errors.slice(0, 10)) {
+              sections.push(`  • ${err}`);
+            }
+            if (errors.length > 10) {
+              sections.push(`  ... and ${errors.length - 10} more errors`);
+            }
+          }
           break;
         }
       }
