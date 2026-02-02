@@ -108,7 +108,6 @@
     "should_remember": { "status": "implemented", "category": "autonomous" },
     "extract_learnings": { "status": "implemented", "category": "autonomous" },
     "analyze_conversation": { "status": "implemented", "category": "alignment" },
-    "what_to_remember": { "status": "implemented", "category": "alignment" },
     "start_session": { "status": "implemented", "category": "session" },
     "end_session": { "status": "implemented", "category": "session" },
     "set_project": { "status": "implemented", "category": "project" },

@@ -1,9 +1,12 @@
 /**
  * Server Startup Contract Tests
- * 
+ *
  * These tests validate that the MCP server can start without errors.
  * This catches issues like duplicate tool registrations that only
  * manifest at runtime when all tools are registered.
+ *
+ * Updated to work with modular architecture where tools are defined
+ * in src/tools/*.ts files instead of inline in src/index.ts.
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
@@ -12,55 +15,62 @@ import * as path from "path";
 
 describe("Server Startup Contracts", () => {
   describe("Tool Registration Validation", () => {
-    let indexContent: string;
-    let toolRegistrations: { name: string; line: number }[];
+    let toolRegistrations: { name: string; file: string; line: number }[];
 
     beforeAll(() => {
-      // Read the source file to analyze tool registrations
-      const indexPath = path.join(process.cwd(), "src", "index.ts");
-      indexContent = fs.readFileSync(indexPath, "utf-8");
-      
-      // Extract all server.tool("name", ...) registrations
-      const lines = indexContent.split("\n");
       toolRegistrations = [];
-      
-      // Match patterns like: server.tool(\n  "toolname",
-      // or server.tool("toolname",
-      const toolPattern = /server\.tool\(\s*["']([^"']+)["']/g;
-      
-      let match;
-      while ((match = toolPattern.exec(indexContent)) !== null) {
-        // Find line number
-        const beforeMatch = indexContent.slice(0, match.index);
-        const lineNumber = beforeMatch.split("\n").length;
-        toolRegistrations.push({ name: match[1], line: lineNumber });
+
+      // Scan all tool files in src/tools/
+      const toolsDir = path.join(process.cwd(), "src", "tools");
+      const toolFiles = fs.readdirSync(toolsDir).filter(f => f.endsWith(".ts") && f !== "index.ts");
+
+      for (const file of toolFiles) {
+        const filePath = path.join(toolsDir, file);
+        const content = fs.readFileSync(filePath, "utf-8");
+
+        // Match patterns like: server.tool(\n  "toolname",
+        // or server.tool("toolname",
+        const toolPattern = /server\.tool\(\s*["']([^"']+)["']/g;
+
+        let match;
+        while ((match = toolPattern.exec(content)) !== null) {
+          // Find line number
+          const beforeMatch = content.slice(0, match.index);
+          const lineNumber = beforeMatch.split("\n").length;
+          toolRegistrations.push({
+            name: match[1],
+            file: file,
+            line: lineNumber
+          });
+        }
       }
     });
 
     it("should have no duplicate tool names", () => {
       const toolNames = toolRegistrations.map((t) => t.name);
       const uniqueNames = new Set(toolNames);
-      
+
       if (toolNames.length !== uniqueNames.size) {
-        // Find duplicates and report with line numbers
-        const seen = new Map<string, number>();
+        // Find duplicates and report with file and line numbers
+        const seen = new Map<string, { file: string; line: number }>();
         const duplicates: string[] = [];
-        
+
         for (const reg of toolRegistrations) {
           if (seen.has(reg.name)) {
+            const first = seen.get(reg.name)!;
             duplicates.push(
-              `Tool "${reg.name}" registered at lines ${seen.get(reg.name)} and ${reg.line}`
+              `Tool "${reg.name}" registered in ${first.file}:${first.line} and ${reg.file}:${reg.line}`
             );
           } else {
-            seen.set(reg.name, reg.line);
+            seen.set(reg.name, { file: reg.file, line: reg.line });
           }
         }
-        
+
         throw new Error(
           `Duplicate tool registrations found:\n${duplicates.join("\n")}`
         );
       }
-      
+
       expect(toolNames.length).toBe(uniqueNames.size);
     });
 
@@ -87,14 +97,14 @@ describe("Server Startup Contracts", () => {
 
     it("should have valid tool name format", () => {
       const invalidNames: string[] = [];
-      
+
       for (const reg of toolRegistrations) {
         // Tool names should be lowercase, alphanumeric with underscores
         if (!/^[a-z][a-z0-9_]*$/.test(reg.name)) {
-          invalidNames.push(`"${reg.name}" at line ${reg.line}`);
+          invalidNames.push(`"${reg.name}" in ${reg.file}:${reg.line}`);
         }
       }
-      
+
       expect(
         invalidNames,
         `Invalid tool names (should be lowercase snake_case): ${invalidNames.join(", ")}`
@@ -150,51 +160,62 @@ describe("Server Startup Contracts", () => {
     });
   });
 
-  describe("Section Organization", () => {
-    it("should have properly organized sections", () => {
-      const indexPath = path.join(process.cwd(), "src", "index.ts");
-      const content = fs.readFileSync(indexPath, "utf-8");
-      
-      // Check for section headers
-      const sectionPattern = /\/\/ ============ ([A-Z][A-Z0-9 -]+) ============/g;
-      const sections: string[] = [];
-      
-      let match;
-      while ((match = sectionPattern.exec(content)) !== null) {
-        sections.push(match[1]);
-      }
-      
-      // Should have organized sections
-      expect(sections.length).toBeGreaterThan(5);
-      
-      // Check for expected sections
-      const expectedSections = [
-        "MEMORY TOOLS",
-        "SESSION TOOLS",
-        "UTILITY TOOLS",
+  describe("Modular Organization", () => {
+    it("should have properly organized tool modules", () => {
+      const toolsDir = path.join(process.cwd(), "src", "tools");
+
+      // Check that tools directory exists
+      expect(fs.existsSync(toolsDir)).toBe(true);
+
+      // Check for expected tool module files
+      const expectedModules = [
+        "core-tools.ts",
+        "autonomous-tools.ts",
+        "session-tools.ts",
+        "project-tools.ts",
+        "utility-tools.ts",
+        "shadow-tools.ts",
+        "introspect-tools.ts",
+        "llm-tools.ts",
+        "graph-tools.ts",
+        "policy-tools.ts",
+        "dream-tools.ts",
+        "index.ts",
       ];
-      
-      for (const section of expectedSections) {
+
+      for (const module of expectedModules) {
+        const modulePath = path.join(toolsDir, module);
         expect(
-          sections.some((s) => s.includes(section)),
-          `Missing section: ${section}`
+          fs.existsSync(modulePath),
+          `Missing tool module: ${module}`
         ).toBe(true);
       }
-      
-      // Check for duplicate sections (which caused our bug)
-      const uniqueSections = new Set(sections);
-      if (sections.length !== uniqueSections.size) {
-        const counts = new Map<string, number>();
-        for (const s of sections) {
-          counts.set(s, (counts.get(s) || 0) + 1);
-        }
-        const duplicates = [...counts.entries()]
-          .filter(([, count]) => count > 1)
-          .map(([name, count]) => `"${name}" appears ${count} times`);
-        
-        throw new Error(
-          `Duplicate section headers found:\n${duplicates.join("\n")}`
-        );
+    });
+
+    it("should have index.ts exporting all register functions", () => {
+      const indexPath = path.join(process.cwd(), "src", "tools", "index.ts");
+      const content = fs.readFileSync(indexPath, "utf-8");
+
+      // Check for expected exports
+      const expectedExports = [
+        "registerCoreTools",
+        "registerAutonomousTools",
+        "registerSessionTools",
+        "registerProjectTools",
+        "registerUtilityTools",
+        "registerShadowTools",
+        "registerIntrospectTools",
+        "registerLlmTools",
+        "registerGraphTools",
+        "registerPolicyTools",
+        "registerDreamTools",
+      ];
+
+      for (const exportName of expectedExports) {
+        expect(
+          content.includes(exportName),
+          `Missing export: ${exportName}`
+        ).toBe(true);
       }
     });
   });

@@ -218,6 +218,46 @@ export function preprocess(
 }
 
 /**
+ * Extract inline CLI-style flags from content
+ * Handles patterns like: "content --type decision --importance 5 --tags a,b,c"
+ */
+export interface ExtractedFlags {
+  content: string;          // Content with flags removed
+  type?: string;
+  importance?: number;
+  tags?: string[];
+}
+
+export function extractInlineFlags(raw: string): ExtractedFlags {
+  let content = raw;
+  const result: ExtractedFlags = { content: raw };
+
+  // Extract --type
+  const typeMatch = content.match(/\s+--type\s+(\w+)/i);
+  if (typeMatch) {
+    result.type = typeMatch[1].toLowerCase();
+    content = content.replace(typeMatch[0], '');
+  }
+
+  // Extract --importance
+  const importanceMatch = content.match(/\s+--importance\s+(\d)/i);
+  if (importanceMatch) {
+    result.importance = parseInt(importanceMatch[1], 10);
+    content = content.replace(importanceMatch[0], '');
+  }
+
+  // Extract --tags (comma-separated)
+  const tagsMatch = content.match(/\s+--tags\s+([\w,\-]+)/i);
+  if (tagsMatch) {
+    result.tags = tagsMatch[1].split(',').map(t => t.trim()).filter(t => t.length > 0);
+    content = content.replace(tagsMatch[0], '');
+  }
+
+  result.content = content.trim();
+  return result;
+}
+
+/**
  * Preprocess for foundational memories (goals, identity, values)
  */
 export function preprocessFoundational(

@@ -24,6 +24,26 @@ import {
   type ConsolidationJudgment,
 } from "./llm.js";
 
+// ============ CONSTANTS ============
+
+const DREAM = {
+  // Contradiction detection confidence thresholds
+  TEMPORAL_CONFLICT_CONFIDENCE: 0.7,
+  DIRECT_CONFLICT_CONFIDENCE: 0.85,
+  MIN_CONTRADICTION_CONFIDENCE: 0.6,
+
+  // Consolidation
+  DEFAULT_CONSOLIDATION_THRESHOLD: 0.85,
+  NOVELTY_THRESHOLD: 0.3,        // Minimum novel word ratio to include a sentence
+  DUPLICATE_TEXT_THRESHOLD: 0.7,  // Text similarity above which content is considered duplicate
+  MIN_IMPORTANCE_CHANGE: 0.1,    // Minimum change to trigger a decay update
+
+  // Decay
+  ACCESS_BOOST_PER_COUNT: 0.1,   // Importance boost per access
+  MAX_ACCESS_BOOST: 1,           // Cap on access-based importance boost
+  MAX_IMPORTANCE: 5,
+} as const;
+
 // Database operations will be injected to avoid circular dependencies
 export interface DreamDbOperations {
   updateMemory: (id: string, updates: Partial<Memory>) => Promise<void>;
@@ -93,7 +113,7 @@ function detectTemporalConflict(a: Memory, b: Memory): ContradictionCandidate | 
       memory_a: older,
       memory_b: newer,
       conflict_type: "temporal",
-      confidence: 0.7,
+      confidence: DREAM.TEMPORAL_CONFLICT_CONFIDENCE,
       explanation: `Newer memory (${newer.id}) may supersede older memory (${older.id}) on same topic`,
     };
   }
@@ -124,7 +144,7 @@ function detectDirectConflict(a: Memory, b: Memory): ContradictionCandidate | nu
           memory_a: a,
           memory_b: b,
           conflict_type: "direct",
-          confidence: 0.85,
+          confidence: DREAM.DIRECT_CONFLICT_CONFIDENCE,
           explanation: `Direct contradiction about "${subjectA}": one says to use it, another says not to`,
         };
       }
@@ -143,7 +163,7 @@ function detectDirectConflict(a: Memory, b: Memory): ContradictionCandidate | nu
           memory_a: a,
           memory_b: b,
           conflict_type: "direct",
-          confidence: 0.85,
+          confidence: DREAM.DIRECT_CONFLICT_CONFIDENCE,
           explanation: `Direct contradiction about "${subjectA}"`,
         };
       }
@@ -178,7 +198,7 @@ export interface MemoryWithEmbedding {
  */
 export async function findConsolidationCandidatesWithEmbeddings(
   memories: Memory[],
-  similarityThreshold: number = 0.85
+  similarityThreshold: number = DREAM.DEFAULT_CONSOLIDATION_THRESHOLD
 ): Promise<ConsolidationCandidate[]> {
   if (memories.length < 2) return [];
   
@@ -200,7 +220,7 @@ export async function findConsolidationCandidatesWithEmbeddings(
  */
 export function findConsolidationCandidatesFromEmbeddings(
   memoriesWithEmbeddings: MemoryWithEmbedding[],
-  similarityThreshold: number = 0.85
+  similarityThreshold: number = DREAM.DEFAULT_CONSOLIDATION_THRESHOLD
 ): ConsolidationCandidate[] {
   const candidates: ConsolidationCandidate[] = [];
   const processed = new Set<string>();
@@ -284,10 +304,10 @@ export function intelligentMerge(memories: Memory[]): { content: string; rationa
       const novelty = 1 - (overlap / Math.max(sentenceWords.size, 1));
       
       // If sentence has significant novel content (>30% new words)
-      if (novelty > 0.3 && sentence.length > 10) {
+      if (novelty > DREAM.NOVELTY_THRESHOLD && sentence.length > 10) {
         // Check it's not already added
         const isDuplicate = uniqueAdditions.some(existing => 
-          computeTextSimilarity(existing, sentence) > 0.7
+          computeTextSimilarity(existing, sentence) > DREAM.DUPLICATE_TEXT_THRESHOLD
         );
         
         if (!isDuplicate) {
@@ -329,7 +349,7 @@ function extractSentences(text: string): string[] {
  */
 export function findConsolidationCandidates(
   memories: Memory[],
-  similarityThreshold: number = 0.85
+  similarityThreshold: number = DREAM.DEFAULT_CONSOLIDATION_THRESHOLD
 ): ConsolidationCandidate[] {
   const candidates: ConsolidationCandidate[] = [];
   const processed = new Set<string>();
@@ -433,11 +453,11 @@ export function calculateDecay(
   const decayed = memory.importance * decayFactor;
   
   // Access count provides resistance to decay
-  const accessBoost = Math.min(memory.access_count * 0.1, 1);
+  const accessBoost = Math.min(memory.access_count * DREAM.ACCESS_BOOST_PER_COUNT, DREAM.MAX_ACCESS_BOOST);
   const withBoost = decayed + accessBoost;
-  
+
   // Clamp to valid range
-  return Math.max(config.minImportance, Math.min(5, withBoost));
+  return Math.max(config.minImportance, Math.min(DREAM.MAX_IMPORTANCE, withBoost));
 }
 
 // ============================================================================
@@ -570,7 +590,7 @@ export function runDreamCycle(
   if (config.operations.includes("consolidate")) {
     const candidates = findConsolidationCandidates(
       memories, 
-      config.consolidationThreshold ?? 0.85
+      config.consolidationThreshold ?? DREAM.DEFAULT_CONSOLIDATION_THRESHOLD
     );
     report.consolidations = candidates.length;
   }
@@ -579,7 +599,7 @@ export function runDreamCycle(
     let decayedCount = 0;
     for (const memory of memories) {
       const newImportance = calculateDecay(memory, config.decayConfig);
-      if (Math.abs(newImportance - memory.importance) > 0.1) {
+      if (Math.abs(newImportance - memory.importance) > DREAM.MIN_IMPORTANCE_CHANGE) {
         decayedCount++;
       }
     }
@@ -629,7 +649,7 @@ export async function runDreamCycleWithMutations(
         : dreamConfig.decayConfig;
 
       const newImportance = calculateDecay(memory, decayConfig);
-      if (Math.abs(newImportance - memory.importance) > 0.1) {
+      if (Math.abs(newImportance - memory.importance) > DREAM.MIN_IMPORTANCE_CHANGE) {
         await db.updateMemory(memory.id, {
           importance: Math.round(newImportance * 10) / 10
         });
@@ -774,7 +794,7 @@ function findAllContradictions(memories: Memory[]): ContradictionCandidate[] {
   for (let i = 0; i < memories.length; i++) {
     for (let j = i + 1; j < memories.length; j++) {
       const conflict = detectContradiction(memories[i], memories[j]);
-      if (conflict && conflict.confidence > 0.6) {
+      if (conflict && conflict.confidence > DREAM.MIN_CONTRADICTION_CONFIDENCE) {
         contradictions.push(conflict);
       }
     }

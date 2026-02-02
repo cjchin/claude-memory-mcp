@@ -13,6 +13,21 @@ const MEMORIES_COLLECTION = "claude_memories";
 const SESSIONS_COLLECTION = "claude_sessions";
 const PROJECTS_COLLECTION = "claude_projects";
 
+const DB = {
+  DEFAULT_SEARCH_LIMIT: 10,
+  SEARCH_FETCH_MULTIPLIER: 2,     // Fetch 2x results before filtering
+  GRAPH_MEMORY_LIMIT: 500,        // Max memories for graph building
+  IMPORTANCE_BOOST_FACTOR: 0.1,   // Score boost per importance level above 3
+  ACCESS_BOOST_FACTOR: 0.02,      // Score boost per access count
+  ACCESS_BOOST_MAX: 0.2,          // Cap on access-based score boost
+  DEFAULT_HYBRID_SEMANTIC_WEIGHT: 0.6,
+  DEFAULT_HYBRID_BM25_WEIGHT: 0.3,
+  DEFAULT_HYBRID_GRAPH_WEIGHT: 0.1,
+  DEFAULT_HYBRID_GRAPH_MAX_DISTANCE: 2,
+  GRAPH_EXPANSION_SCORE: 0.1,     // Score assigned to graph-expanded results
+  DEFAULT_SIMILAR_THRESHOLD: 0.85,
+} as const;
+
 let client: ChromaClient | null = null;
 let memoriesCollection: Collection | null = null;
 let sessionsCollection: Collection | null = null;
@@ -45,6 +60,70 @@ export async function initDb(): Promise<void> {
 
 function generateId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ============ MEMORY PARSING HELPER ============
+
+/**
+ * Parse ChromaDB metadata into a Memory object.
+ * Single source of truth for metadata → Memory conversion.
+ */
+function parseMemoryFromChroma(
+  id: string,
+  document: string,
+  metadata: Record<string, any>,
+  extras?: Record<string, any>
+): Memory {
+  const memory: Memory = {
+    id,
+    content: document,
+    type: (metadata.type as MemoryType) || "context",
+    tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
+    timestamp: (metadata.timestamp as string) || "",
+    ingestion_time: (metadata.ingestion_time as string) || undefined,
+    project: (metadata.project as string) || undefined,
+    session_id: (metadata.session_id as string) || undefined,
+    importance: (metadata.importance as number) || 3,
+    access_count: (metadata.access_count as number) || 0,
+    last_accessed: (metadata.last_accessed as string) || undefined,
+    related_memories: ((metadata.related_memories as string) || "")
+      .split(",")
+      .filter(Boolean),
+    scope: ((metadata.scope as string) || "personal") as MemoryScope,
+    owner: (metadata.owner as string) || undefined,
+    layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
+    valid_from: (metadata.valid_from as string) || undefined,
+    valid_until: (metadata.valid_until as string) || undefined,
+    supersedes: (metadata.supersedes as string) || undefined,
+    superseded_by: (metadata.superseded_by as string) || undefined,
+    confidence: (metadata.confidence as number) ?? 1,
+    source: ((metadata.source as string) || "human") as Memory["source"],
+  };
+
+  // Parse rich links from links_json
+  if (metadata.links_json) {
+    try {
+      memory.links = JSON.parse(metadata.links_json as string);
+    } catch {
+      // Ignore malformed links_json
+    }
+  }
+
+  // Parse metadata_json
+  if (metadata.metadata_json) {
+    try {
+      memory.metadata = JSON.parse(metadata.metadata_json as string);
+    } catch {
+      // Ignore malformed metadata_json
+    }
+  }
+
+  // Merge any extra fields (e.g. score, embedding)
+  if (extras) {
+    Object.assign(memory, extras);
+  }
+
+  return memory;
 }
 
 // ============ MEMORY OPERATIONS ============
@@ -137,33 +216,11 @@ async function getMemoryRaw(id: string): Promise<Memory | null> {
 
   if (!results.ids.length) return null;
 
-  const metadata = results.metadatas?.[0] || {};
-
-  return {
+  return parseMemoryFromChroma(
     id,
-    content: results.documents?.[0] || "",
-    type: (metadata.type as MemoryType) || "context",
-    tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
-    timestamp: (metadata.timestamp as string) || "",
-    ingestion_time: (metadata.ingestion_time as string) || undefined,
-    project: (metadata.project as string) || undefined,
-    session_id: (metadata.session_id as string) || undefined,
-    importance: (metadata.importance as number) || 3,
-    access_count: (metadata.access_count as number) || 0,
-    last_accessed: (metadata.last_accessed as string) || undefined,
-    related_memories: ((metadata.related_memories as string) || "")
-      .split(",")
-      .filter(Boolean),
-    scope: ((metadata.scope as string) || "personal") as MemoryScope,
-    owner: (metadata.owner as string) || undefined,
-    layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
-    valid_from: (metadata.valid_from as string) || undefined,
-    valid_until: (metadata.valid_until as string) || undefined,
-    supersedes: (metadata.supersedes as string) || undefined,
-    superseded_by: (metadata.superseded_by as string) || undefined,
-    confidence: (metadata.confidence as number) ?? 1,
-    source: ((metadata.source as string) || "human") as Memory["source"],
-  };
+    results.documents?.[0] || "",
+    results.metadatas?.[0] || {}
+  );
 }
 
 /**
@@ -211,7 +268,7 @@ export async function searchMemories(
   if (!memoriesCollection) await initDb();
 
   const {
-    limit = 10,
+    limit = DB.DEFAULT_SEARCH_LIMIT,
     types,
     tags,
     project,
@@ -245,7 +302,7 @@ export async function searchMemories(
 
   const results = await memoriesCollection!.query({
     queryEmbeddings: [queryEmbedding],
-    nResults: limit * 2, // Fetch extra to filter
+    nResults: limit * DB.SEARCH_FETCH_MULTIPLIER, // Fetch extra to filter
     where: whereClause,
     include: [IncludeEnum.Documents, IncludeEnum.Metadatas, IncludeEnum.Distances],
   });
@@ -253,41 +310,15 @@ export async function searchMemories(
   if (!results.ids[0]?.length) return [];
 
   let memories = results.ids[0].map((id, i) => {
-    const metadata = results.metadatas[0]?.[i] || {};
     const distance = results.distances?.[0]?.[i] || 0;
     const score = 1 - distance; // Convert distance to similarity
 
-    return {
+    return parseMemoryFromChroma(
       id,
-      content: results.documents[0]?.[i] || "",
-      type: (metadata.type as MemoryType) || "context",
-      tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
-      timestamp: (metadata.timestamp as string) || "",
-      ingestion_time: (metadata.ingestion_time as string) || undefined,
-      project: (metadata.project as string) || undefined,
-      session_id: (metadata.session_id as string) || undefined,
-      importance: (metadata.importance as number) || 3,
-      access_count: (metadata.access_count as number) || 0,
-      last_accessed: (metadata.last_accessed as string) || undefined,
-      related_memories: ((metadata.related_memories as string) || "")
-        .split(",")
-        .filter(Boolean),
-      metadata: metadata.metadata_json
-        ? JSON.parse(metadata.metadata_json as string)
-        : undefined,
-      // Scope fields
-      scope: ((metadata.scope as string) || "personal") as MemoryScope,
-      owner: (metadata.owner as string) || undefined,
-      // Soul temporal fields
-      layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
-      valid_from: (metadata.valid_from as string) || undefined,
-      valid_until: (metadata.valid_until as string) || undefined,
-      supersedes: (metadata.supersedes as string) || undefined,
-      superseded_by: (metadata.superseded_by as string) || undefined,
-      confidence: (metadata.confidence as number) ?? 1,
-      source: ((metadata.source as string) || "human") as Memory["source"],
-      score,
-    };
+      results.documents[0]?.[i] || "",
+      results.metadatas[0]?.[i] || {},
+      { score }
+    ) as Memory & { score: number };
   });
 
   // Filter by tags if specified (ChromaDB doesn't support $contains well)
@@ -305,8 +336,8 @@ export async function searchMemories(
     memories = memories.map((m) => {
       const age = now - new Date(m.timestamp).getTime();
       const decayFactor = Math.pow(0.5, age / halfLifeMs);
-      const boostFactor = 1 + (m.importance - 3) * 0.1; // Importance boost
-      const accessBoost = Math.min(m.access_count * 0.02, 0.2); // Access boost
+      const boostFactor = 1 + (m.importance - 3) * DB.IMPORTANCE_BOOST_FACTOR;
+      const accessBoost = Math.min(m.access_count * DB.ACCESS_BOOST_FACTOR, DB.ACCESS_BOOST_MAX);
 
       return {
         ...m,
@@ -321,10 +352,10 @@ export async function searchMemories(
     const allMemoriesForGraph = await getAllMemoriesForGraph(project);
 
     const defaultHybridConfig: HybridSearchConfig = {
-      semanticWeight: 0.6,
-      bm25Weight: 0.3,
-      graphWeight: 0.1,
-      graphMaxDistance: 2,
+      semanticWeight: DB.DEFAULT_HYBRID_SEMANTIC_WEIGHT,
+      bm25Weight: DB.DEFAULT_HYBRID_BM25_WEIGHT,
+      graphWeight: DB.DEFAULT_HYBRID_GRAPH_WEIGHT,
+      graphMaxDistance: DB.DEFAULT_HYBRID_GRAPH_MAX_DISTANCE,
     };
 
     const mergedConfig = { ...defaultHybridConfig, ...hybridConfig };
@@ -342,7 +373,7 @@ export async function searchMemories(
       // Add neighbors with a lower score indicator
       const neighborResults = neighbors.map((m) => ({
         ...m,
-        score: 0.1,  // Low score to appear after main results
+        score: DB.GRAPH_EXPANSION_SCORE,  // Low score to appear after main results
         semanticScore: 0,
         bm25Score: 0,
         graphBoost: 0.1,
@@ -372,41 +403,20 @@ async function getAllMemoriesForGraph(project?: string): Promise<Memory[]> {
   const whereClause = project ? { project } : undefined;
 
   const results = await memoriesCollection!.get({
-    limit: 500,  // Reasonable limit for graph building
+    limit: DB.GRAPH_MEMORY_LIMIT,
     where: whereClause,
     include: [IncludeEnum.Documents, IncludeEnum.Metadatas],
   });
 
   if (!results.ids.length) return [];
 
-  return results.ids.map((id, i) => {
-    const metadata = results.metadatas?.[i] || {};
-    return {
+  return results.ids.map((id, i) =>
+    parseMemoryFromChroma(
       id,
-      content: results.documents?.[i] || "",
-      type: (metadata.type as MemoryType) || "context",
-      tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
-      timestamp: (metadata.timestamp as string) || "",
-      ingestion_time: (metadata.ingestion_time as string) || undefined,
-      project: (metadata.project as string) || undefined,
-      session_id: (metadata.session_id as string) || undefined,
-      importance: (metadata.importance as number) || 3,
-      access_count: (metadata.access_count as number) || 0,
-      last_accessed: (metadata.last_accessed as string) || undefined,
-      related_memories: ((metadata.related_memories as string) || "")
-        .split(",")
-        .filter(Boolean),
-      scope: ((metadata.scope as string) || "personal") as MemoryScope,
-      owner: (metadata.owner as string) || undefined,
-      layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
-      valid_from: (metadata.valid_from as string) || undefined,
-      valid_until: (metadata.valid_until as string) || undefined,
-      supersedes: (metadata.supersedes as string) || undefined,
-      superseded_by: (metadata.superseded_by as string) || undefined,
-      confidence: (metadata.confidence as number) ?? 1,
-      source: ((metadata.source as string) || "human") as Memory["source"],
-    };
-  });
+      results.documents?.[i] || "",
+      results.metadatas?.[i] || {}
+    )
+  );
 }
 
 export async function getMemory(id: string): Promise<Memory | null> {
@@ -422,44 +432,26 @@ export async function getMemory(id: string): Promise<Memory | null> {
   const metadata = results.metadatas?.[0] || {};
 
   // Update access tracking
+  const newAccessCount = ((metadata.access_count as number) || 0) + 1;
+  const newLastAccessed = new Date().toISOString();
+
   await memoriesCollection!.update({
     ids: [id],
     metadatas: [
       {
         ...metadata,
-        access_count: ((metadata.access_count as number) || 0) + 1,
-        last_accessed: new Date().toISOString(),
+        access_count: newAccessCount,
+        last_accessed: newLastAccessed,
       },
     ],
   });
 
-  return {
+  return parseMemoryFromChroma(
     id,
-    content: results.documents?.[0] || "",
-    type: (metadata.type as MemoryType) || "context",
-    tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
-    timestamp: (metadata.timestamp as string) || "",
-    ingestion_time: (metadata.ingestion_time as string) || undefined,
-    project: (metadata.project as string) || undefined,
-    session_id: (metadata.session_id as string) || undefined,
-    importance: (metadata.importance as number) || 3,
-    access_count: ((metadata.access_count as number) || 0) + 1,
-    last_accessed: new Date().toISOString(),
-    related_memories: ((metadata.related_memories as string) || "")
-      .split(",")
-      .filter(Boolean),
-    // Scope fields
-    scope: ((metadata.scope as string) || "personal") as MemoryScope,
-    owner: (metadata.owner as string) || undefined,
-    // Soul temporal fields
-    layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
-    valid_from: (metadata.valid_from as string) || undefined,
-    valid_until: (metadata.valid_until as string) || undefined,
-    supersedes: (metadata.supersedes as string) || undefined,
-    superseded_by: (metadata.superseded_by as string) || undefined,
-    confidence: (metadata.confidence as number) ?? 1,
-    source: ((metadata.source as string) || "human") as Memory["source"],
-  };
+    results.documents?.[0] || "",
+    metadata,
+    { access_count: newAccessCount, last_accessed: newLastAccessed }
+  );
 }
 
 export async function updateMemory(
@@ -564,36 +556,13 @@ export async function listMemories(options: {
 
   if (!results.ids.length) return [];
 
-  let memories = results.ids.map((id, i) => {
-    const metadata = results.metadatas?.[i] || {};
-    return {
+  let memories = results.ids.map((id, i) =>
+    parseMemoryFromChroma(
       id,
-      content: results.documents?.[i] || "",
-      type: (metadata.type as MemoryType) || "context",
-      tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
-      timestamp: (metadata.timestamp as string) || "",
-      ingestion_time: (metadata.ingestion_time as string) || undefined,
-      project: (metadata.project as string) || undefined,
-      session_id: (metadata.session_id as string) || undefined,
-      importance: (metadata.importance as number) || 3,
-      access_count: (metadata.access_count as number) || 0,
-      last_accessed: (metadata.last_accessed as string) || undefined,
-      related_memories: ((metadata.related_memories as string) || "")
-        .split(",")
-        .filter(Boolean),
-      // Scope fields
-      scope: ((metadata.scope as string) || "personal") as MemoryScope,
-      owner: (metadata.owner as string) || undefined,
-      // Soul temporal fields
-      layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
-      valid_from: (metadata.valid_from as string) || undefined,
-      valid_until: (metadata.valid_until as string) || undefined,
-      supersedes: (metadata.supersedes as string) || undefined,
-      superseded_by: (metadata.superseded_by as string) || undefined,
-      confidence: (metadata.confidence as number) ?? 1,
-      source: ((metadata.source as string) || "human") as Memory["source"],
-    };
-  });
+      results.documents?.[i] || "",
+      results.metadatas?.[i] || {}
+    )
+  );
 
   // Sort
   switch (sortBy) {
@@ -637,37 +606,14 @@ export async function getAllMemoriesWithEmbeddings(): Promise<
 
   if (!results.ids.length) return [];
 
-  return results.ids.map((id, i) => {
-    const metadata = results.metadatas?.[i] || {};
-    const embedding = results.embeddings?.[i] || [];
-
-    return {
+  return results.ids.map((id, i) =>
+    parseMemoryFromChroma(
       id,
-      content: results.documents?.[i] || "",
-      type: (metadata.type as MemoryType) || "context",
-      tags: ((metadata.tags as string) || "").split(",").filter(Boolean),
-      timestamp: (metadata.timestamp as string) || "",
-      ingestion_time: (metadata.ingestion_time as string) || undefined,
-      project: (metadata.project as string) || undefined,
-      session_id: (metadata.session_id as string) || undefined,
-      importance: (metadata.importance as number) || 3,
-      access_count: (metadata.access_count as number) || 0,
-      last_accessed: (metadata.last_accessed as string) || undefined,
-      related_memories: ((metadata.related_memories as string) || "")
-        .split(",")
-        .filter(Boolean),
-      scope: ((metadata.scope as string) || "personal") as MemoryScope,
-      owner: (metadata.owner as string) || undefined,
-      layer: ((metadata.layer as string) || "long_term") as MemoryLayer,
-      valid_from: (metadata.valid_from as string) || undefined,
-      valid_until: (metadata.valid_until as string) || undefined,
-      supersedes: (metadata.supersedes as string) || undefined,
-      superseded_by: (metadata.superseded_by as string) || undefined,
-      confidence: (metadata.confidence as number) ?? 1,
-      source: ((metadata.source as string) || "human") as Memory["source"],
-      embedding: embedding as number[],
-    };
-  });
+      results.documents?.[i] || "",
+      results.metadatas?.[i] || {},
+      { embedding: (results.embeddings?.[i] || []) as number[] }
+    ) as Memory & { embedding: number[] }
+  );
 }
 
 /**
@@ -929,7 +875,7 @@ export async function listProjects(): Promise<ProjectContext[]> {
 
 export async function findSimilarMemories(
   content: string,
-  threshold: number = 0.85
+  threshold: number = DB.DEFAULT_SIMILAR_THRESHOLD
 ): Promise<Memory[]> {
   const results = await searchMemories(content, { limit: 5 });
   return results.filter((m) => m.score >= threshold);
@@ -962,4 +908,92 @@ export async function consolidateMemories(
   }
 
   return newId;
+}
+
+// ============ MEMORY LINK OPERATIONS ============
+
+/**
+ * Get all links for a memory (parses links_json from metadata)
+ */
+export async function getMemoryLinks(memoryId: string): Promise<Array<{
+  targetId: string;
+  type: string;
+  reason?: string;
+  strength?: number;
+  createdBy?: string;
+  createdAt?: string;
+}>> {
+  if (!memoriesCollection) await initDb();
+
+  const results = await memoriesCollection!.get({
+    ids: [memoryId],
+    include: [IncludeEnum.Metadatas],
+  });
+
+  if (!results.ids.length) return [];
+
+  const metadata = results.metadatas?.[0] || {};
+
+  if (metadata.links_json) {
+    try {
+      return JSON.parse(metadata.links_json as string);
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Remove a specific link from a memory
+ */
+export async function removeMemoryLink(
+  memoryId: string,
+  targetId: string,
+  linkType?: string
+): Promise<boolean> {
+  if (!memoriesCollection) await initDb();
+
+  const results = await memoriesCollection!.get({
+    ids: [memoryId],
+    include: [IncludeEnum.Metadatas],
+  });
+
+  if (!results.ids.length) return false;
+
+  const metadata = results.metadatas?.[0] || {};
+  let links: any[] = [];
+
+  if (metadata.links_json) {
+    try {
+      links = JSON.parse(metadata.links_json as string);
+    } catch {
+      links = [];
+    }
+  }
+
+  const originalLength = links.length;
+  links = links.filter(l => {
+    if (l.targetId !== targetId) return true;
+    if (linkType && l.type !== linkType) return true;
+    return false;
+  });
+
+  if (links.length === originalLength) return false;
+
+  // Also update simple related_memories
+  let relatedMemories = ((metadata.related_memories as string) || "").split(",").filter(Boolean);
+  relatedMemories = relatedMemories.filter(id => id !== targetId);
+
+  await memoriesCollection!.update({
+    ids: [memoryId],
+    metadatas: [{
+      ...metadata,
+      links_json: JSON.stringify(links),
+      related_memories: relatedMemories.join(","),
+    }],
+  });
+
+  return true;
 }

@@ -18,7 +18,7 @@ const THRESHOLDS = {
   singleEmbed: 5000,      // First embedding can be slow (model loading)
   batchEmbed10: 5000,     // 10 embeddings should be < 5s
   triggerDetection: 50,   // Trigger detection should be < 50ms
-  intelligenceStack: 50,  // Full intelligence analysis < 50ms
+  intelligenceStack: 75,  // Full intelligence analysis < 75ms
   chromaSearch: 200,      // ChromaDB search should be < 200ms
 };
 

@@ -14,36 +14,44 @@
  */
 
 import type { Memory, MemoryLink, LinkType } from "./types.js";
+import { cosineSimilarity } from "./embeddings.js";
+
+// ============ CONSTANTS ============
+
+const GRAPH = {
+  // k-NN defaults
+  DEFAULT_K_NEIGHBORS: 5,
+  DEFAULT_MIN_SIMILARITY: 0.5,
+
+  // Clustering
+  CLUSTER_MIN_SIMILARITY: 0.6,
+
+  // Temporal inference
+  SUPERSESSION_DAYS_THRESHOLD: 7,
+  EXTENDS_LENGTH_RATIO: 1.5,
+
+  // Centrality scoring
+  DEGREE_CENTRALITY_WEIGHT: 0.1,
+  CROSS_CLUSTER_MULTIPLIER: 2,
+  SAME_CLUSTER_MULTIPLIER: 0.5,
+
+  // Highway detection
+  HIGHWAY_FRACTION: 0.1,  // Top 10% of memories by centrality
+
+  // Link priority boosts
+  HIGHWAY_PRIORITY_BOOST: 0.2,
+  CROSS_CLUSTER_PRIORITY_BOOST: 0.15,
+} as const;
 
 // ============ SIMILARITY & CLUSTERING ============
-
-/**
- * Cosine similarity between two vectors
- */
-export function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) return 0;
-
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-
-  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-  return denominator === 0 ? 0 : dotProduct / denominator;
-}
 
 /**
  * Find k-nearest neighbors for each memory based on embeddings
  */
 export function findKNearestNeighbors(
   memories: Array<{ id: string; embedding: number[] }>,
-  k: number = 5,
-  minSimilarity: number = 0.5
+  k: number = GRAPH.DEFAULT_K_NEIGHBORS,
+  minSimilarity: number = GRAPH.DEFAULT_MIN_SIMILARITY
 ): Map<string, Array<{ id: string; similarity: number }>> {
   const neighbors = new Map<string, Array<{ id: string; similarity: number }>>();
 
@@ -73,7 +81,7 @@ export function findKNearestNeighbors(
  */
 export function clusterMemories(
   neighbors: Map<string, Array<{ id: string; similarity: number }>>,
-  minSimilarity: number = 0.6
+  minSimilarity: number = GRAPH.CLUSTER_MIN_SIMILARITY
 ): Map<string, number> {
   const clusters = new Map<string, number>();
   const visited = new Set<string>();
@@ -168,7 +176,7 @@ export function inferLinkType(
     const daysDiff = timeDiff / (1000 * 60 * 60 * 24);
 
     // If source is significantly newer and similar content, might supersede
-    if (daysDiff > 7 && sourceLevel >= targetLevel) {
+    if (daysDiff > GRAPH.SUPERSESSION_DAYS_THRESHOLD && sourceLevel >= targetLevel) {
       // Check for supersession signals (word-start boundary, allow suffixes)
       if (/\b(supersed\w*|replac\w*|updat\w*|revis\w*|no longer|instead)\b/i.test(sourceContent)) {
         return "supersedes";
@@ -251,7 +259,7 @@ export function inferLinkType(
   // Context to context: related
   if (sourceType === "context" && targetType === "context") {
     // Check if one elaborates the other
-    if (sourceContent.length > targetContent.length * 1.5) {
+    if (sourceContent.length > targetContent.length * GRAPH.EXTENDS_LENGTH_RATIO) {
       return "extends";  // Longer one extends shorter
     }
   }
@@ -315,16 +323,16 @@ export function calculateCentrality(
     let score = 0;
 
     // Degree centrality (number of connections)
-    score += nodeNeighbors.length * 0.1;
+    score += nodeNeighbors.length * GRAPH.DEGREE_CENTRALITY_WEIGHT;
 
     // Cross-cluster connections (bridge score)
     for (const neighbor of nodeNeighbors) {
       const neighborCluster = clusters.get(neighbor.id);
       if (neighborCluster !== undefined && neighborCluster !== nodeCluster) {
         // Extra points for connecting different clusters
-        score += neighbor.similarity * 2;
+        score += neighbor.similarity * GRAPH.CROSS_CLUSTER_MULTIPLIER;
       } else {
-        score += neighbor.similarity * 0.5;
+        score += neighbor.similarity * GRAPH.SAME_CLUSTER_MULTIPLIER;
       }
     }
 
@@ -393,7 +401,7 @@ export function generateProposedLinks(
   const centrality = calculateCentrality(neighbors, clusters);
 
   // Step 4: Identify highways
-  const highways = new Set(identifyHighways(centrality, Math.ceil(memories.length * 0.1)));
+  const highways = new Set(identifyHighways(centrality, Math.ceil(memories.length * GRAPH.HIGHWAY_FRACTION)));
 
   // Step 5: Generate links
   const proposedLinks: ProposedLink[] = [];
@@ -453,13 +461,13 @@ export function generateProposedLinks(
     let scoreB = b.strength;
 
     if (prioritizeHighways) {
-      if (a.isHighwayConnection) scoreA += 0.2;
-      if (b.isHighwayConnection) scoreB += 0.2;
+      if (a.isHighwayConnection) scoreA += GRAPH.HIGHWAY_PRIORITY_BOOST;
+      if (b.isHighwayConnection) scoreB += GRAPH.HIGHWAY_PRIORITY_BOOST;
     }
 
     if (prioritizeCrossCluster) {
-      if (a.isCrossCluster) scoreA += 0.15;
-      if (b.isCrossCluster) scoreB += 0.15;
+      if (a.isCrossCluster) scoreA += GRAPH.CROSS_CLUSTER_PRIORITY_BOOST;
+      if (b.isCrossCluster) scoreB += GRAPH.CROSS_CLUSTER_PRIORITY_BOOST;
     }
 
     return scoreB - scoreA;
@@ -550,7 +558,7 @@ export function analyzeGraphEnrichment(
   );
   const clusterAssignments = clusterMemories(neighbors, minSimilarity + 0.1);
   const centrality = calculateCentrality(neighbors, clusterAssignments);
-  const highways = identifyHighways(centrality, Math.ceil(memories.length * 0.1));
+  const highways = identifyHighways(centrality, Math.ceil(memories.length * GRAPH.HIGHWAY_FRACTION));
 
   // Organize clusters
   const clusters = new Map<number, string[]>();

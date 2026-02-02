@@ -159,7 +159,7 @@ describe("MCP Tool Integration Tests", () => {
     });
   });
 
-  describe("what_to_remember tool", () => {
+  describe("SmartAlignmentEngine.analyze", () => {
     let engine: SmartAlignmentEngine;
 
     beforeEach(() => {
@@ -174,10 +174,10 @@ describe("MCP Tool Integration Tests", () => {
 
       // Should identify the decision
       expect(result.memoriesToCreate.length).toBeGreaterThan(0);
-      
+
       // At least one should be about the decision
-      const decision = result.memoriesToCreate.find(m => 
-        m.content.toLowerCase().includes("redis") || 
+      const decision = result.memoriesToCreate.find(m =>
+        m.content.toLowerCase().includes("redis") ||
         m.content.toLowerCase().includes("caching")
       );
       expect(decision).toBeDefined();

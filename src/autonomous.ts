@@ -6,6 +6,36 @@
  */
 
 import type { MemoryType } from "./types.js";
+import { detectTags } from "./intelligence.js";
+
+// ============ CONSTANTS ============
+
+const CONFIDENCE = {
+  DECISION: 0.85,
+  LEARNING: 0.8,
+  PATTERN: 0.8,
+  TODO: 0.75,
+  PREFERENCE: 0.7,
+  CONTEXT: 0.7,
+  RECALL: 0.8,
+  SYNTHESIS: 0.9,
+  ALIGN: 0.75,
+  CLAUDE_RECOMMENDATION: 0.75,
+  CLAUDE_DISCOVERY: 0.7,
+  CLAUDE_PATTERN: 0.7,
+  CLAUDE_SOLUTION: 0.8,
+  // Master trigger thresholds
+  MIN_SAVE_TRIGGER: 0.7,
+  MIN_RECALL_TRIGGER: 0.7,
+  MIN_SYNTHESIS_TRIGGER: 0.8,
+  MIN_ALIGN_TRIGGER: 0.8,
+  // Auto-save thresholds
+  MIN_USER_AUTO_SAVE: 0.7,
+  MIN_CLAUDE_AUTO_SAVE: 0.75,
+  // Deduplication
+  DEDUP_THRESHOLD: 0.7,
+  EXTRACT_DEDUP_THRESHOLD: 0.8,
+} as const;
 
 // ============ IMPLICIT TRIGGER PATTERNS ============
 
@@ -38,9 +68,9 @@ export function detectSaveTrigger(message: string): TriggerMatch | null {
       return {
         type: "save",
         memoryType: "decision",
-        confidence: 0.85,
+        confidence: CONFIDENCE.DECISION,
         extractedContent: match[0],
-        suggestedTags: detectTagsFromContent(message),
+        suggestedTags: detectTags(message),
       };
     }
   }
@@ -60,9 +90,9 @@ export function detectSaveTrigger(message: string): TriggerMatch | null {
       return {
         type: "save",
         memoryType: "learning",
-        confidence: 0.8,
+        confidence: CONFIDENCE.LEARNING,
         extractedContent: match[0],
-        suggestedTags: detectTagsFromContent(message),
+        suggestedTags: detectTags(message),
       };
     }
   }
@@ -81,9 +111,9 @@ export function detectSaveTrigger(message: string): TriggerMatch | null {
       return {
         type: "save",
         memoryType: "pattern",
-        confidence: 0.8,
+        confidence: CONFIDENCE.PATTERN,
         extractedContent: match[0],
-        suggestedTags: detectTagsFromContent(message),
+        suggestedTags: detectTags(message),
       };
     }
   }
@@ -103,9 +133,9 @@ export function detectSaveTrigger(message: string): TriggerMatch | null {
       return {
         type: "save",
         memoryType: "todo",
-        confidence: 0.75,
+        confidence: CONFIDENCE.TODO,
         extractedContent: match[0],
-        suggestedTags: detectTagsFromContent(message),
+        suggestedTags: detectTags(message),
       };
     }
   }
@@ -123,9 +153,9 @@ export function detectSaveTrigger(message: string): TriggerMatch | null {
       return {
         type: "save",
         memoryType: "preference",
-        confidence: 0.7,
+        confidence: CONFIDENCE.PREFERENCE,
         extractedContent: match[0],
-        suggestedTags: detectTagsFromContent(message),
+        suggestedTags: detectTags(message),
       };
     }
   }
@@ -143,9 +173,9 @@ export function detectSaveTrigger(message: string): TriggerMatch | null {
       return {
         type: "save",
         memoryType: "context",
-        confidence: 0.7,
+        confidence: CONFIDENCE.CONTEXT,
         extractedContent: match[0],
-        suggestedTags: detectTagsFromContent(message),
+        suggestedTags: detectTags(message),
       };
     }
   }
@@ -173,7 +203,7 @@ export function detectRecallTrigger(message: string): TriggerMatch | null {
     if (match) {
       return {
         type: "recall",
-        confidence: 0.8,
+        confidence: CONFIDENCE.RECALL,
         extractedContent: match[1] || match[0],
       };
     }
@@ -200,7 +230,7 @@ export function detectSynthesisTrigger(message: string): TriggerMatch | null {
     if (pattern.test(message)) {
       return {
         type: "synthesize",
-        confidence: 0.9,
+        confidence: CONFIDENCE.SYNTHESIS,
       };
     }
   }
@@ -227,7 +257,7 @@ export function detectAlignTrigger(message: string): TriggerMatch | null {
     if (match) {
       return {
         type: "align",
-        confidence: 0.75,
+        confidence: CONFIDENCE.ALIGN,
         extractedContent: match[1] || match[0],
       };
     }
@@ -242,45 +272,18 @@ export function detectAlignTrigger(message: string): TriggerMatch | null {
 export function detectTrigger(message: string): TriggerMatch | null {
   // Check in order of specificity
   const synthesis = detectSynthesisTrigger(message);
-  if (synthesis && synthesis.confidence >= 0.8) return synthesis;
+  if (synthesis && synthesis.confidence >= CONFIDENCE.MIN_SYNTHESIS_TRIGGER) return synthesis;
 
   const align = detectAlignTrigger(message);
-  if (align && align.confidence >= 0.8) return align;
+  if (align && align.confidence >= CONFIDENCE.MIN_ALIGN_TRIGGER) return align;
 
   const recall = detectRecallTrigger(message);
-  if (recall && recall.confidence >= 0.7) return recall;
+  if (recall && recall.confidence >= CONFIDENCE.MIN_RECALL_TRIGGER) return recall;
 
   const save = detectSaveTrigger(message);
-  if (save && save.confidence >= 0.7) return save;
+  if (save && save.confidence >= CONFIDENCE.MIN_SAVE_TRIGGER) return save;
 
   return null;
-}
-
-/**
- * Helper: detect tags from content
- */
-function detectTagsFromContent(content: string): string[] {
-  const lower = content.toLowerCase();
-  const tags: string[] = [];
-
-  const tagKeywords: Record<string, string[]> = {
-    architecture: ["architecture", "design", "structure", "system", "component"],
-    api: ["api", "endpoint", "rest", "graphql", "http", "request"],
-    database: ["database", "db", "sql", "query", "table", "schema", "postgres", "mongo"],
-    auth: ["auth", "login", "session", "token", "jwt", "password", "permission"],
-    performance: ["performance", "speed", "fast", "slow", "optimize", "cache"],
-    security: ["security", "secure", "vulnerability", "xss", "csrf", "sanitize"],
-    testing: ["test", "spec", "unit", "integration", "mock", "jest", "coverage"],
-    deployment: ["deploy", "ci", "cd", "docker", "kubernetes", "aws", "cloud"],
-  };
-
-  for (const [tag, keywords] of Object.entries(tagKeywords)) {
-    if (keywords.some((k) => lower.includes(k))) {
-      tags.push(tag);
-    }
-  }
-
-  return tags.slice(0, 5);
 }
 
 // ============ SYNTHESIS OPERATIONS ============
@@ -306,7 +309,7 @@ export function extractMemorablePoints(text: string): ConversationPoint[] {
 
   for (const statement of statements) {
     const trigger = detectSaveTrigger(statement);
-    if (trigger && trigger.confidence >= 0.7) {
+    if (trigger && trigger.confidence >= CONFIDENCE.MIN_SAVE_TRIGGER) {
       points.push({
         type: trigger.memoryType || "context",
         content: statement,
@@ -320,7 +323,7 @@ export function extractMemorablePoints(text: string): ConversationPoint[] {
   const unique: ConversationPoint[] = [];
   for (const point of points) {
     const isDuplicate = unique.some(
-      (p) => similarity(p.content, point.content) > 0.8
+      (p) => similarity(p.content, point.content) > CONFIDENCE.EXTRACT_DEDUP_THRESHOLD
     );
     if (!isDuplicate) {
       unique.push(point);
@@ -393,9 +396,9 @@ export function detectClaudeInsights(response: string): TriggerMatch[] {
       insights.push({
         type: "save",
         memoryType: "decision",
-        confidence: 0.75,
+        confidence: CONFIDENCE.CLAUDE_RECOMMENDATION,
         extractedContent: match[0],
-        suggestedTags: detectTagsFromContent(match[0]),
+        suggestedTags: detectTags(match[0]),
       });
     }
   }
@@ -414,9 +417,9 @@ export function detectClaudeInsights(response: string): TriggerMatch[] {
       insights.push({
         type: "save",
         memoryType: "learning",
-        confidence: 0.7,
+        confidence: CONFIDENCE.CLAUDE_DISCOVERY,
         extractedContent: match[0],
-        suggestedTags: detectTagsFromContent(match[0]),
+        suggestedTags: detectTags(match[0]),
       });
     }
   }
@@ -434,9 +437,9 @@ export function detectClaudeInsights(response: string): TriggerMatch[] {
       insights.push({
         type: "save",
         memoryType: "pattern",
-        confidence: 0.7,
+        confidence: CONFIDENCE.CLAUDE_PATTERN,
         extractedContent: match[0],
-        suggestedTags: detectTagsFromContent(match[0]),
+        suggestedTags: detectTags(match[0]),
       });
     }
   }
@@ -454,9 +457,9 @@ export function detectClaudeInsights(response: string): TriggerMatch[] {
       insights.push({
         type: "save",
         memoryType: "learning",
-        confidence: 0.8,
+        confidence: CONFIDENCE.CLAUDE_SOLUTION,
         extractedContent: match[0],
-        suggestedTags: [...detectTagsFromContent(match[0]), "bugfix"],
+        suggestedTags: [...detectTags(match[0]), "bugfix"],
       });
     }
   }
@@ -468,7 +471,7 @@ export function detectClaudeInsights(response: string): TriggerMatch[] {
       (u) =>
         u.extractedContent &&
         insight.extractedContent &&
-        similarity(u.extractedContent, insight.extractedContent) > 0.7
+        similarity(u.extractedContent, insight.extractedContent) > CONFIDENCE.DEDUP_THRESHOLD
     );
     if (!isDuplicate) {
       unique.push(insight);
@@ -569,8 +572,8 @@ export function analyzeConversationTurn(
   const semanticSignal = detectSemanticSignal(userMessage + " " + claudeResponse);
 
   const shouldAutoSave =
-    (userTrigger?.confidence ?? 0) >= 0.7 ||
-    claudeInsights.some((i) => i.confidence >= 0.75) ||
+    (userTrigger?.confidence ?? 0) >= CONFIDENCE.MIN_USER_AUTO_SAVE ||
+    claudeInsights.some((i) => i.confidence >= CONFIDENCE.MIN_CLAUDE_AUTO_SAVE) ||
     semanticSignal.signal === "critical" ||
     semanticSignal.signal === "important";
 

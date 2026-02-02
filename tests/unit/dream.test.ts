@@ -9,6 +9,7 @@ import { describe, it, expect } from "vitest";
 import {
   detectContradiction,
   findConsolidationCandidates,
+  intelligentMerge,
   calculateDecay,
   parseFoundingMemories,
   createFoundationalMemory,
@@ -169,7 +170,65 @@ describe("dream.ts", () => {
       if (candidates.length > 0) {
         // Suggested merge should be the longer content
         expect(candidates[0].suggestedMerge).toContain("state management");
+        // Should have merge rationale
+        expect(candidates[0].mergeRationale).toBeDefined();
       }
+    });
+  });
+
+  describe("intelligentMerge", () => {
+    it("should return empty content for empty array", () => {
+      const result = intelligentMerge([]);
+      expect(result.content).toBe("");
+      expect(result.rationale).toContain("No memories");
+    });
+
+    it("should return single memory unchanged", () => {
+      const memory = createMemory({ content: "Single memory content" });
+      const result = intelligentMerge([memory]);
+      expect(result.content).toBe("Single memory content");
+      expect(result.rationale).toContain("Single memory");
+    });
+
+    it("should keep most important memory as base", () => {
+      const memories = [
+        createMemory({ id: "1", content: "Low importance content", importance: 2 }),
+        createMemory({ id: "2", content: "High importance content with more details", importance: 5 }),
+      ];
+      
+      const result = intelligentMerge(memories);
+      expect(result.content).toContain("High importance");
+    });
+
+    it("should add unique details from other memories", () => {
+      const memories = [
+        createMemory({ 
+          id: "1", 
+          content: "We use React for the frontend. It provides component-based architecture.",
+          importance: 4 
+        }),
+        createMemory({ 
+          id: "2", 
+          content: "React is used for frontend. Also supports server-side rendering with Next.js.",
+          importance: 3 
+        }),
+      ];
+      
+      const result = intelligentMerge(memories);
+      // Base content should be there
+      expect(result.content).toContain("component-based");
+      // Should include unique info about Next.js from second memory
+      expect(result.content.toLowerCase()).toContain("next");
+    });
+
+    it("should provide meaningful rationale", () => {
+      const memories = [
+        createMemory({ id: "1", content: "TypeScript provides type safety for JavaScript" }),
+        createMemory({ id: "2", content: "TypeScript adds static typing to JavaScript development" }),
+      ];
+      
+      const result = intelligentMerge(memories);
+      expect(result.rationale).toMatch(/Combined \d+ memories|Kept most important/);
     });
   });
 

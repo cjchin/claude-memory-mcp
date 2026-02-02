@@ -134,6 +134,16 @@ export const ACTION_METADATA: Record<WalkerAction, ActionMetadata> = {
   },
 };
 
+// ============ CONSTANTS ============
+
+const POLICY = {
+  CAUTIOUS_DEFAULT_TRUST: 0.3,   // Default trust when no reviews exist
+  NO_DATA_APPROVAL_RATIO: 0.5,  // Assumed ratio with zero human reviews
+  MAX_CONFIDENCE_REVIEWS: 20,    // Number of reviews for full confidence
+  HIGH_IMPORTANCE_THRESHOLD: 4,  // Importance level requiring review
+  PROPOSAL_MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000,  // 7 days
+} as const;
+
 // ============ TRUST TRACKING ============
 
 /**
@@ -164,13 +174,13 @@ export function calculateTrustScore(
 
   // Base score: approval ratio
   const humanReviewed = approved + rejected;
-  const approvalRatio = humanReviewed > 0 ? approved / humanReviewed : 0.5;
+  const approvalRatio = humanReviewed > 0 ? approved / humanReviewed : POLICY.NO_DATA_APPROVAL_RATIO;
 
   // Confidence: more reviews = more confident in the score
-  const confidence = Math.min(humanReviewed / 20, 1); // Max confidence at 20 reviews
+  const confidence = Math.min(humanReviewed / POLICY.MAX_CONFIDENCE_REVIEWS, 1);
 
-  // Blend: low confidence pulls toward 0.3 (cautious default)
-  return 0.3 * (1 - confidence) + approvalRatio * confidence;
+  // Blend: low confidence pulls toward cautious default
+  return POLICY.CAUTIOUS_DEFAULT_TRUST * (1 - confidence) + approvalRatio * confidence;
 }
 
 /**
@@ -299,7 +309,7 @@ export class PolicyEngine {
     // Context-based checks BEFORE trust (these override trust)
     if (context) {
       // High importance memories need more review
-      if (context.targetImportance && context.targetImportance >= 4) {
+      if (context.targetImportance && context.targetImportance >= POLICY.HIGH_IMPORTANCE_THRESHOLD) {
         return "review";
       }
 
@@ -457,7 +467,7 @@ export function createProposal(
  */
 export function isProposalExpired(
   proposal: Proposal,
-  maxAgeMs: number = 7 * 24 * 60 * 60 * 1000
+  maxAgeMs: number = POLICY.PROPOSAL_MAX_AGE_MS
 ): boolean {
   if (proposal.status !== "pending") return false;
   const age = Date.now() - new Date(proposal.timestamp).getTime();
@@ -496,4 +506,83 @@ export const WALKER_CAPABILITIES: Record<WalkerType, WalkerAction[]> = {
  */
 export function walkerCanPerform(walker: WalkerType, action: WalkerAction): boolean {
   return WALKER_CAPABILITIES[walker]?.includes(action) ?? false;
+}
+
+// ============ TRUST PERSISTENCE ============
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+
+/**
+ * Get the path to trust_scores.json
+ */
+function getTrustFilePath(): string {
+  const configDir = join(homedir(), ".claude-memory");
+  if (!existsSync(configDir)) {
+    mkdirSync(configDir, { recursive: true });
+  }
+  return join(configDir, "trust_scores.json");
+}
+
+/**
+ * Load trust scores from disk
+ */
+export function loadTrustScores(): TrustScore[] {
+  const filePath = getTrustFilePath();
+  if (!existsSync(filePath)) {
+    return [];
+  }
+  try {
+    const data = readFileSync(filePath, "utf-8");
+    const parsed = JSON.parse(data);
+    // Validate structure
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (s): s is TrustScore =>
+          typeof s.action === "string" &&
+          typeof s.score === "number" &&
+          typeof s.totalProposals === "number"
+      );
+    }
+    return [];
+  } catch (error) {
+    console.error("Failed to load trust scores:", error);
+    return [];
+  }
+}
+
+/**
+ * Save trust scores to disk
+ */
+export function saveTrustScores(scores: TrustScore[]): void {
+  const filePath = getTrustFilePath();
+  try {
+    writeFileSync(filePath, JSON.stringify(scores, null, 2), "utf-8");
+  } catch (error) {
+    console.error("Failed to save trust scores:", error);
+  }
+}
+
+/**
+ * Create a PolicyEngine with persistent trust scores
+ * Call savePolicyEngine() after recording outcomes to persist
+ */
+export function createPersistentPolicyEngine(
+  config: Partial<PolicyConfig> = {}
+): PolicyEngine {
+  const engine = new PolicyEngine(config);
+  const scores = loadTrustScores();
+  if (scores.length > 0) {
+    engine.importTrustScores(scores);
+  }
+  return engine;
+}
+
+/**
+ * Save the current state of a PolicyEngine to disk
+ */
+export function savePolicyEngine(engine: PolicyEngine): void {
+  const scores = engine.exportTrustScores();
+  saveTrustScores(scores);
 }

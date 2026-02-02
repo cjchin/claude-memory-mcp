@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { cosineSimilarity } from "../../src/embeddings.js";
 import {
-  cosineSimilarity,
   findKNearestNeighbors,
   clusterMemories,
   inferLinkType,
@@ -71,8 +71,8 @@ describe("Cosine Similarity", () => {
     expect(cosineSimilarity(vec1, vec2)).toBeCloseTo(0.96, 5);
   });
 
-  it("should return 0 for different length vectors", () => {
-    expect(cosineSimilarity([1, 2], [1, 2, 3])).toBe(0);
+  it("should throw for different length vectors", () => {
+    expect(() => cosineSimilarity([1, 2], [1, 2, 3])).toThrow("Vector length mismatch");
   });
 });
 
