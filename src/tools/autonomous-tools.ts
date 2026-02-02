@@ -21,7 +21,7 @@ import { detectMemoryType, detectTags, estimateImportance } from "../intelligenc
 import { detectTrigger, extractMemorablePoints, detectClaudeInsights, analyzeConversationTurn, detectSemanticSignal } from "../autonomous.js";
 import { SmartAlignmentEngine } from "../alignment.js";
 import type { MemoryType } from "../types.js";
-import { listActiveShadows, getShadowEntry, checkPromotionThresholds, getRecentlyPromoted, finalizeShadow, getActiveMinutes } from "../shadow-log.js";
+import { listActiveShadows, getShadowEntry, checkPromotionThresholds, getRecentlyPromoted, finalizeShadow, getActiveMinutes, formatShadowForClaude, getSessionShadows } from "../shadow-log.js";
 import { recordToolActivity } from "./shadow-tools.js";
 
 const alignmentEngine = new SmartAlignmentEngine({ autoSaveEnabled: true, userTriggerThreshold: 0.7, claudeInsightThreshold: 0.75 });
@@ -37,7 +37,19 @@ export function registerAutonomousTools(server: McpServer): void {
         const shadows = listActiveShadows(); const rp = getRecentlyPromoted(); const pc = checkPromotionThresholds();
         if (shadows.length > 0) { sections.push(`\n\u{1f441}\u{fe0f} RECENT SHADOWS (active working memory):`); for (const s of shadows.slice(0, 3)) { const il = s.session_id === sessionId; const sl = il ? "(this)" : "(other)"; const am = Math.round(getActiveMinutes(s)); sections.push(`  \u250c\u2500 ${s.topic} ${sl} ${"\u2500".repeat(39)}\n  \u2502 Activity: ${s.activities.length} items, ${am}min active\n  \u2502 Density: ${s.tokens} tokens\n  \u2514${"\u2500".repeat(60)}`); } if (shadows.length > 3) { sections.push(`  ... and ${shadows.length - 3} more shadows`); } }
         if (rp.length > 0) { sections.push(`\n\u2728 RECENTLY PROMOTED:`); for (const p of rp.slice(-3)) { sections.push(`  \u2022 [shadow\u2192memory] "${p.topic}" (${p.memory_id})`); } }
-        if (pc.length > 0) { sections.push(`\n\u26a1 PROMOTION CANDIDATES (${pc.length}):`); for (const c of pc.slice(0, 2)) { sections.push(`  \u2022 "${c.topic}" - ${c.tokens} tokens (use promote_shadow to convert)`); } }
+        if (config.shadow_surface_in_prime && pc.length > 0) {
+          sections.push(`\n\u{1f441}\u{fe0f} SHADOW PROMOTION CANDIDATES (${pc.length}):\n`);
+          for (const c of pc.slice(0, 3)) {
+            const tokenPct = Math.round((c.tokens / config.shadow_token_threshold) * 100);
+            const timePct = Math.round((getActiveMinutes(c) / config.shadow_time_threshold_min) * 100);
+            sections.push(formatShadowForClaude(c));
+            sections.push(`  Progress: ${Math.max(tokenPct, timePct)}% to threshold\n`);
+          }
+          sections.push(`\u{1f4a1} Reflect on these activities and use 'remember' to save insights.`);
+        } else if (pc.length > 0) {
+          sections.push(`\n\u26a1 PROMOTION CANDIDATES (${pc.length}):`);
+          for (const c of pc.slice(0, 2)) { sections.push(`  \u2022 "${c.topic}" - ${c.tokens} tokens (use promote_shadow to convert)`); }
+        }
       }
       const limits = { quick: 3, normal: 5, deep: 10 }; const limit = limits[depth];
       const todos = await listMemories({ limit, project: project || undefined, type: "todo", sortBy: "importance" });
@@ -68,6 +80,25 @@ export function registerAutonomousTools(server: McpServer): void {
         results.push(`\u{1f4cb} TODOs added:`);
         for (const step of next_steps) { const sim = await findSimilarMemories(step, 0.85); if (sim.length > 0) { results.push(`   [SKIP] Already exists: "${step.slice(0, 40)}..."`); continue; } const id = await saveMemory({ content: step, type: "todo", tags: detectTags(step), importance: 4, project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString() }); await addMemoryToSession(id); results.push(`   \u25a1 ${step.slice(0, 50)}... \u2192 ${id}`); }
         results.push("");
+      }
+      // Surface session shadows for Claude's reflection
+      if (config.shadow_enabled && config.shadow_surface_in_conclude) {
+        const sessionShadows = getSessionShadows(sessionId);
+        const threshold = config.shadow_token_threshold * config.shadow_surface_threshold;
+        const substantialShadows = sessionShadows.filter(s =>
+          (s.status === "active" || s.status === "idle") &&
+          s.tokens >= threshold
+        );
+        if (substantialShadows.length > 0) {
+          results.push(`\n\u{1f441}\u{fe0f} SHADOW MEMORY (Working memory from this session):\n`);
+          for (const shadow of substantialShadows.slice(0, 3)) {
+            results.push(formatShadowForClaude(shadow));
+            const tokenPct = Math.round((shadow.tokens / config.shadow_token_threshold) * 100);
+            results.push(`  Progress: ${tokenPct}% to promotion threshold\n`);
+          }
+          results.push(`\u{1f4ad} Reflect: What did you learn from this exploration?`);
+          results.push(`   \u2192 Use 'remember' to save key insights before ending session\n`);
+        }
       }
       results.push(`Session: ${sessionId}`); results.push(`Project: ${config.current_project || "none"}`); results.push(`\n\u2713 Checkpoint complete. Soul updated.`);
       return { content: [{ type: "text" as const, text: results.join("\n") }] };

@@ -150,11 +150,17 @@ ChromaDB operations with semantic search:
 
 Ephemeral working memory that tracks activity:
 
-- **Accumulation**: Records file reads, searches, tool uses
+- **Accumulation**: Records file reads/writes, searches, commands, tool uses
+- **Deduplication**: Collapses repeated activities (e.g., reading same file 10× → 1 entry with count=10)
 - **Token Density**: Tracks accumulated complexity
+- **Self-Reporting**: Claude can log activities via `log_activity` and `batch_log_activities` tools
 - **Promotion**: Converts to long-term when:
   - Token density > 500, OR
   - Active for > 30 minutes
+- **Claude-Assisted Synthesis**:
+  - `prime` tool surfaces promotion candidates for Claude to review
+  - `conclude` tool shows session shadows for reflection
+  - Claude synthesizes insights and uses `remember` to save them
 - **Decay**: Idle shadows expire after 24 hours
 - **Storage**: JSON file (lightweight, no external deps)
 
@@ -462,12 +468,14 @@ Trigger: Manual (run_dream) or scheduled daemon
 | `memory_types` | List all memory types with descriptions |
 | `soul_status` | System health check |
 
-#### **Shadow Tools** (2 tools) - `shadow-tools.ts`
+#### **Shadow Tools** (4 tools) - `shadow-tools.ts`
 
 | Tool | Purpose |
 |------|---------|
-| `shadow_status` | View shadow log status |
-| `promote_shadow` | Manually promote shadow to long-term |
+| `log_activity` | Record a single activity (file read/write, search, command) |
+| `batch_log_activities` | Record multiple activities at once (efficient batching) |
+| `shadow_status` | View shadow log status and promotion candidates |
+| `promote_shadow` | Manually promote shadow to long-term memory |
 
 #### **Introspect Tools** (1 tool) - `introspect-tools.ts`
 

@@ -26,6 +26,9 @@ import {
   clearShadowLog,
   createActivity,
   exportShadowStore,
+  formatShadowForClaude,
+  countActivityTypes,
+  extractKeyDetails,
 } from "../../src/shadow-log.js";
 import type { ShadowActivity, ShadowEntry } from "../../src/types.js";
 
@@ -424,6 +427,282 @@ describe("shadow-log.ts", () => {
       expect(sessionIds).toContain("session_a");
       expect(sessionIds).toContain("session_b");
       expect(sessionIds).toContain("session_c");
+    });
+  });
+
+  describe("Phase 1 Enhancements: Activity Self-Reporting", () => {
+    describe("new activity types", () => {
+      it("should support file_write activity type", () => {
+        const activity = createActivity("file_write", "/src/test.ts");
+        const shadow = recordActivity(TEST_SESSION, activity);
+
+        expect(shadow.activities[0].type).toBe("file_write");
+      });
+
+      it("should support command activity type", () => {
+        const activity = createActivity("command", "npm test");
+        const shadow = recordActivity(TEST_SESSION, activity);
+
+        expect(shadow.activities[0].type).toBe("command");
+      });
+
+      it("should support topic_shift activity type", () => {
+        const activity = createActivity("topic_shift", "authentication");
+        const shadow = recordActivity(TEST_SESSION, activity);
+
+        expect(shadow.activities[0].type).toBe("topic_shift");
+      });
+    });
+
+    describe("deduplication", () => {
+      it("should deduplicate identical file_read activities", () => {
+        const filePath = "/src/auth/login.ts";
+
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "auth");
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "auth");
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "auth");
+
+        const shadow = getShadowEntry(TEST_SESSION, "auth")!;
+
+        // Should have only 1 unique activity with count=3
+        expect(shadow.activities.length).toBe(1);
+        expect(shadow.activities[0].metadata?.count).toBe(3);
+      });
+
+      it("should deduplicate identical search activities", () => {
+        const query = "handleAuth";
+
+        recordActivity(TEST_SESSION, createActivity("search", query), "auth");
+        recordActivity(TEST_SESSION, createActivity("search", query), "auth");
+
+        const shadow = getShadowEntry(TEST_SESSION, "auth")!;
+
+        expect(shadow.activities.length).toBe(1);
+        expect(shadow.activities[0].metadata?.count).toBe(2);
+      });
+
+      it("should not deduplicate different activities", () => {
+        recordActivity(TEST_SESSION, createActivity("file_read", "/src/a.ts"), "test");
+        recordActivity(TEST_SESSION, createActivity("file_read", "/src/b.ts"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+
+        expect(shadow.activities.length).toBe(2);
+      });
+
+      it("should track first_seen and last_seen timestamps", async () => {
+        const filePath = "/src/test.ts";
+
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "test");
+
+        // Small delay
+        await new Promise(resolve => setTimeout(resolve, 10));
+
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const activity = shadow.activities[0];
+
+        expect(activity.metadata?.first_seen).toBeDefined();
+        expect(activity.metadata?.last_seen).toBeDefined();
+        expect(activity.metadata?.count).toBe(2);
+      });
+
+      it("should accumulate tokens correctly with deduplication", () => {
+        const filePath = "/src/test.ts";
+        const tokenCount = 10;
+
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath, tokenCount), "test");
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath, tokenCount), "test");
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath, tokenCount), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+
+        // Tokens should still accumulate (3 * 10 = 30)
+        expect(shadow.tokens).toBe(30);
+      });
+    });
+
+    describe("generateShadowSummary with deduplication", () => {
+      it("should show counts for deduplicated activities", () => {
+        const filePath = "/src/auth/login.ts";
+
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "auth");
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "auth");
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "auth");
+
+        const shadow = getShadowEntry(TEST_SESSION, "auth")!;
+        const summary = generateShadowSummary(shadow);
+
+        // Should show 3 file reads (deduplicated count)
+        expect(summary).toContain("3 file reads");
+      });
+
+      it("should include file_write activities in summary", () => {
+        recordActivity(TEST_SESSION, createActivity("file_write", "/src/test.ts"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const summary = generateShadowSummary(shadow);
+
+        expect(summary).toContain("file write");
+      });
+
+      it("should include command activities in summary", () => {
+        recordActivity(TEST_SESSION, createActivity("command", "npm test"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const summary = generateShadowSummary(shadow);
+
+        expect(summary).toContain("command");
+      });
+    });
+  });
+
+  describe("Phase 2 Enhancements: Shadow Formatting", () => {
+    describe("countActivityTypes", () => {
+      it("should count activities by type", () => {
+        recordActivity(TEST_SESSION, createActivity("file_read", "a.ts"), "test");
+        recordActivity(TEST_SESSION, createActivity("file_read", "b.ts"), "test");
+        recordActivity(TEST_SESSION, createActivity("search", "query"), "test");
+        recordActivity(TEST_SESSION, createActivity("command", "npm test"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const counts = countActivityTypes(shadow.activities);
+
+        expect(counts.file_read).toBe(2);
+        expect(counts.search).toBe(1);
+        expect(counts.command).toBe(1);
+      });
+
+      it("should account for deduplication counts", () => {
+        const filePath = "/src/test.ts";
+
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "test");
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "test");
+        recordActivity(TEST_SESSION, createActivity("file_read", filePath), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const counts = countActivityTypes(shadow.activities);
+
+        // Should count 3 (deduplicated count)
+        expect(counts.file_read).toBe(3);
+      });
+    });
+
+    describe("extractKeyDetails", () => {
+      it("should extract unique file names", () => {
+        recordActivity(TEST_SESSION, createActivity("file_read", "/src/auth/login.ts"), "test");
+        recordActivity(TEST_SESSION, createActivity("file_read", "/src/auth/logout.ts"), "test");
+        recordActivity(TEST_SESSION, createActivity("file_write", "/src/db/query.ts"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const details = extractKeyDetails(shadow.activities);
+
+        expect(details.files).toContain("login.ts");
+        expect(details.files).toContain("logout.ts");
+        expect(details.files).toContain("query.ts");
+      });
+
+      it("should limit to specified number of items", () => {
+        for (let i = 0; i < 10; i++) {
+          recordActivity(TEST_SESSION, createActivity("file_read", `/src/file${i}.ts`), "test");
+        }
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const details = extractKeyDetails(shadow.activities, 3);
+
+        expect(details.files.length).toBeLessThanOrEqual(3);
+      });
+
+      it("should extract search queries", () => {
+        recordActivity(TEST_SESSION, createActivity("search", "handleAuth"), "test");
+        recordActivity(TEST_SESSION, createActivity("search", "validateToken"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const details = extractKeyDetails(shadow.activities);
+
+        expect(details.searches).toContain("handleAuth");
+        expect(details.searches).toContain("validateToken");
+      });
+
+      it("should extract and truncate long commands", () => {
+        const longCmd = "npm run build && npm run test && npm run lint && npm run format";
+        recordActivity(TEST_SESSION, createActivity("command", longCmd), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const details = extractKeyDetails(shadow.activities);
+
+        expect(details.commands.length).toBe(1);
+        expect(details.commands[0].length).toBeLessThanOrEqual(43); // 40 + "..."
+      });
+    });
+
+    describe("formatShadowForClaude", () => {
+      it("should format shadow with topic and token info", () => {
+        recordActivity(TEST_SESSION, createActivity("file_read", "/src/auth/login.ts", 100), "auth");
+
+        const shadow = getShadowEntry(TEST_SESSION, "auth")!;
+        const formatted = formatShadowForClaude(shadow);
+
+        expect(formatted).toContain("auth");
+        expect(formatted).toContain("100 tokens");
+      });
+
+      it("should show file operations with counts", () => {
+        recordActivity(TEST_SESSION, createActivity("file_read", "/src/a.ts"), "test");
+        recordActivity(TEST_SESSION, createActivity("file_read", "/src/b.ts"), "test");
+        recordActivity(TEST_SESSION, createActivity("file_write", "/src/c.ts"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const formatted = formatShadowForClaude(shadow);
+
+        expect(formatted).toContain("2 reads");
+        expect(formatted).toContain("1 writes");
+        expect(formatted).toContain("a.ts");
+        expect(formatted).toContain("b.ts");
+        expect(formatted).toContain("c.ts");
+      });
+
+      it("should show search activity", () => {
+        recordActivity(TEST_SESSION, createActivity("search", "handleAuth"), "test");
+        recordActivity(TEST_SESSION, createActivity("search", "validateToken"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const formatted = formatShadowForClaude(shadow);
+
+        expect(formatted).toContain("Searched 2 times");
+        expect(formatted).toContain("handleAuth");
+        expect(formatted).toContain("validateToken");
+      });
+
+      it("should show command activity", () => {
+        recordActivity(TEST_SESSION, createActivity("command", "npm test"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const formatted = formatShadowForClaude(shadow);
+
+        expect(formatted).toContain("Ran 1 commands");
+        expect(formatted).toContain("npm test");
+      });
+
+      it("should show memory access activity", () => {
+        recordActivity(TEST_SESSION, createActivity("memory_access", "recall auth patterns"), "test");
+        recordActivity(TEST_SESSION, createActivity("memory_access", "remember decision"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const formatted = formatShadowForClaude(shadow);
+
+        expect(formatted).toContain("Memory access: 2 times");
+      });
+
+      it("should calculate active minutes", () => {
+        recordActivity(TEST_SESSION, createActivity("file_read", "/src/test.ts"), "test");
+
+        const shadow = getShadowEntry(TEST_SESSION, "test")!;
+        const formatted = formatShadowForClaude(shadow);
+
+        expect(formatted).toMatch(/\d+min/);
+      });
     });
   });
 });

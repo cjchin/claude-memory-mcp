@@ -180,9 +180,12 @@ export interface FoundationalMemory extends Memory {
  */
 export type ShadowActivityType =
   | "file_read"      // Reading a file
+  | "file_write"     // Writing a file
   | "search"         // Grep, glob, or semantic search
+  | "command"        // Bash command execution
   | "tool_use"       // Using any MCP tool
   | "topic_mention"  // Topic referenced in conversation
+  | "topic_shift"    // Explicit topic change
   | "memory_access"; // Accessing long-term memory (recall, remember, get_memory)
 
 /**
@@ -202,6 +205,11 @@ export interface ShadowActivity {
   type: ShadowActivityType;      // What kind of activity
   detail: string;                // File path, search query, tool name, etc.
   tokens?: number;               // Estimated tokens for this activity
+  metadata?: {                   // Optional metadata
+    count?: number;              // Deduplication count (how many times this occurred)
+    first_seen?: string;         // First occurrence timestamp
+    last_seen?: string;          // Most recent occurrence timestamp
+  };
 }
 
 /**

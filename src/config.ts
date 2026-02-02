@@ -43,6 +43,10 @@ export interface Config {
   shadow_idle_timeout_min: number;   // Mark idle after N minutes (default: 10)
   shadow_decay_hours: number;        // Decay orphans after N hours (default: 24)
   shadow_max_entries: number;        // Max concurrent shadows (default: 20)
+  shadow_deduplicate: boolean;       // Deduplicate repeated activities (default: true)
+  shadow_surface_in_prime: boolean;  // Show promotion candidates in prime (default: true)
+  shadow_surface_in_conclude: boolean; // Show shadows in conclude (default: true)
+  shadow_surface_threshold: number;  // Min % of threshold to surface (default: 0.6)
 
   // Projects
   current_project?: string;
@@ -68,6 +72,10 @@ const DEFAULT_CONFIG: Config = {
   shadow_idle_timeout_min: 10,     // Mark idle after 10 minutes
   shadow_decay_hours: 24,          // Decay after 24 hours
   shadow_max_entries: 20,          // Max 20 concurrent shadows
+  shadow_deduplicate: true,        // Deduplicate repeated activities
+  shadow_surface_in_prime: true,   // Show promotion candidates in prime
+  shadow_surface_in_conclude: true, // Show shadows in conclude
+  shadow_surface_threshold: 0.6,   // Surface at 60% of threshold
   projects: {},
 };
 

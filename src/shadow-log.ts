@@ -157,8 +157,34 @@ export function recordActivity(
     store.entries.push(shadow);
   }
 
-  // Add activity
-  shadow.activities.push(activity);
+  // Add activity (with optional deduplication)
+  if (config.shadow_deduplicate) {
+    // Check recent activities for duplicates (last 50 activities)
+    const recentActivities = shadow.activities.slice(-50);
+    const duplicateIndex = recentActivities.findIndex(
+      (a) => a.type === activity.type && a.detail === activity.detail
+    );
+
+    if (duplicateIndex !== -1) {
+      // Found a duplicate - increment count instead of adding new entry
+      const duplicate = recentActivities[duplicateIndex];
+      duplicate.metadata = duplicate.metadata || {};
+      duplicate.metadata.count = (duplicate.metadata.count || 1) + 1;
+      duplicate.metadata.last_seen = activity.timestamp;
+      if (!duplicate.metadata.first_seen) {
+        duplicate.metadata.first_seen = duplicate.timestamp;
+      }
+      // Update timestamp to latest occurrence
+      duplicate.timestamp = activity.timestamp;
+    } else {
+      // No duplicate found - add as new activity
+      shadow.activities.push(activity);
+    }
+  } else {
+    // Deduplication disabled - always add
+    shadow.activities.push(activity);
+  }
+
   shadow.last_activity = new Date().toISOString();
   shadow.tokens += activity.tokens || estimateTokens(activity.detail);
 
@@ -314,24 +340,38 @@ export function getRecentlyPromoted(): RecentlyPromoted[] {
 export function generateShadowSummary(shadow: ShadowEntry): string {
   const activityCounts: Record<ShadowActivityType, number> = {
     file_read: 0,
+    file_write: 0,
     search: 0,
+    command: 0,
     tool_use: 0,
     topic_mention: 0,
+    topic_shift: 0,
     memory_access: 0,
   };
 
   const uniqueDetails: Set<string> = new Set();
 
   for (const activity of shadow.activities) {
-    activityCounts[activity.type]++;
+    // Account for deduplication counts
+    const count = activity.metadata?.count || 1;
+    activityCounts[activity.type] += count;
 
     // Extract meaningful details
     if (activity.type === "file_read") {
       // Extract just the filename
       const filename = activity.detail.split(/[/\\]/).pop() || activity.detail;
-      uniqueDetails.add(filename);
+      const label = count > 1 ? `${filename} (×${count})` : filename;
+      uniqueDetails.add(label);
+    } else if (activity.type === "file_write") {
+      const filename = activity.detail.split(/[/\\]/).pop() || activity.detail;
+      const label = count > 1 ? `wrote: ${filename} (×${count})` : `wrote: ${filename}`;
+      uniqueDetails.add(label);
     } else if (activity.type === "search") {
-      uniqueDetails.add(`searched: "${activity.detail}"`);
+      const label = count > 1 ? `searched: "${activity.detail}" (×${count})` : `searched: "${activity.detail}"`;
+      uniqueDetails.add(label);
+    } else if (activity.type === "command") {
+      const label = count > 1 ? `ran: ${activity.detail} (×${count})` : `ran: ${activity.detail}`;
+      uniqueDetails.add(label);
     } else if (activity.type === "memory_access") {
       uniqueDetails.add(activity.detail);
     }
@@ -342,7 +382,9 @@ export function generateShadowSummary(shadow: ShadowEntry): string {
 
   const activitySummary: string[] = [];
   if (activityCounts.file_read > 0) activitySummary.push(`${activityCounts.file_read} file reads`);
+  if (activityCounts.file_write > 0) activitySummary.push(`${activityCounts.file_write} file writes`);
   if (activityCounts.search > 0) activitySummary.push(`${activityCounts.search} searches`);
+  if (activityCounts.command > 0) activitySummary.push(`${activityCounts.command} commands`);
   if (activityCounts.memory_access > 0) activitySummary.push(`${activityCounts.memory_access} memory accesses`);
   if (activityCounts.tool_use > 0) activitySummary.push(`${activityCounts.tool_use} tool uses`);
 
@@ -562,4 +604,105 @@ export function clearShadowLog(): void {
  */
 export function exportShadowStore(): ShadowStore {
   return loadStore();
+}
+
+// ============================================================================
+// Shadow Formatting for Claude (Phase 2)
+// ============================================================================
+
+/**
+ * Count activities by type, accounting for deduplication
+ */
+export function countActivityTypes(activities: ShadowActivity[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const activity of activities) {
+    const type = activity.type;
+    const count = activity.metadata?.count || 1;
+    counts[type] = (counts[type] || 0) + count;
+  }
+  return counts;
+}
+
+/**
+ * Extract key details from activities (filenames, queries, commands)
+ */
+export function extractKeyDetails(
+  activities: ShadowActivity[],
+  limit: number = 5
+): { files: string[]; searches: string[]; commands: string[] } {
+  const files: string[] = [];
+  const searches: string[] = [];
+  const commands: string[] = [];
+
+  for (const activity of activities) {
+    if (activity.type === "file_read" || activity.type === "file_write") {
+      const filename = activity.detail.split(/[/\\]/).pop() || activity.detail;
+      if (!files.includes(filename) && files.length < limit) {
+        files.push(filename);
+      }
+    } else if (activity.type === "search") {
+      const query = activity.detail.length > 50
+        ? activity.detail.slice(0, 47) + "..."
+        : activity.detail;
+      if (!searches.includes(query) && searches.length < limit) {
+        searches.push(query);
+      }
+    } else if (activity.type === "command") {
+      const cmd = activity.detail.length > 40
+        ? activity.detail.slice(0, 37) + "..."
+        : activity.detail;
+      if (!commands.includes(cmd) && commands.length < limit) {
+        commands.push(cmd);
+      }
+    }
+  }
+
+  return { files, searches, commands };
+}
+
+/**
+ * Format a shadow for Claude to review and synthesize
+ * Returns human-readable summary of shadow activities
+ */
+export function formatShadowForClaude(shadow: ShadowEntry): string {
+  const activeMin = Math.round(getActiveMinutes(shadow));
+  const activityCounts = countActivityTypes(shadow.activities);
+  const keyItems = extractKeyDetails(shadow.activities, 5);
+
+  const lines: string[] = [];
+  lines.push(`  Topic: "${shadow.topic}" (${shadow.tokens} tokens, ${activeMin}min)`);
+
+  // File operations
+  if (activityCounts.file_read || activityCounts.file_write) {
+    const readCount = activityCounts.file_read || 0;
+    const writeCount = activityCounts.file_write || 0;
+    let fileOps = [];
+    if (readCount > 0) fileOps.push(`${readCount} reads`);
+    if (writeCount > 0) fileOps.push(`${writeCount} writes`);
+    const fileList = keyItems.files.length > 0 ? `: ${keyItems.files.join(", ")}` : "";
+    lines.push(`  • Files: ${fileOps.join(", ")}${fileList}`);
+  }
+
+  // Searches
+  if (activityCounts.search > 0) {
+    const searchList = keyItems.searches.length > 0
+      ? `: ${keyItems.searches.join(", ")}`
+      : "";
+    lines.push(`  • Searched ${activityCounts.search} times${searchList}`);
+  }
+
+  // Commands
+  if (activityCounts.command > 0) {
+    const cmdList = keyItems.commands.length > 0
+      ? `: ${keyItems.commands.join(", ")}`
+      : "";
+    lines.push(`  • Ran ${activityCounts.command} commands${cmdList}`);
+  }
+
+  // Memory access
+  if (activityCounts.memory_access > 0) {
+    lines.push(`  • Memory access: ${activityCounts.memory_access} times`);
+  }
+
+  return lines.join("\n");
 }

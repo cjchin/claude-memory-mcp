@@ -46,9 +46,197 @@ export function recordToolActivity(
 }
 
 /**
+ * Count activities by type, accounting for deduplication
+ */
+function countActivityTypes(activities: any[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const activity of activities) {
+    const type = activity.type;
+    const count = activity.metadata?.count || 1;
+    counts[type] = (counts[type] || 0) + count;
+  }
+  return counts;
+}
+
+/**
+ * Extract key details from activities (filenames, queries, commands)
+ */
+function extractKeyDetails(
+  activities: any[],
+  limit: number = 5
+): { files: string[]; searches: string[]; commands: string[] } {
+  const files: string[] = [];
+  const searches: string[] = [];
+  const commands: string[] = [];
+
+  for (const activity of activities) {
+    if (activity.type === "file_read" || activity.type === "file_write") {
+      const filename = activity.detail.split(/[/\\]/).pop() || activity.detail;
+      if (files.length < limit) files.push(filename);
+    } else if (activity.type === "search") {
+      if (searches.length < limit) searches.push(`"${activity.detail}"`);
+    } else if (activity.type === "command") {
+      const shortCmd = activity.detail.length > 40
+        ? activity.detail.slice(0, 40) + "..."
+        : activity.detail;
+      if (commands.length < limit) commands.push(shortCmd);
+    }
+  }
+
+  return { files, searches, commands };
+}
+
+/**
  * Register shadow log tools with the MCP server
  */
 export function registerShadowTools(server: McpServer): void {
+  /**
+   * LOG_ACTIVITY - Record a single activity in the shadow log
+   * Used by Claude to self-report built-in tool usage (Read, Write, Grep, Bash)
+   */
+  server.tool(
+    "log_activity",
+    {
+      activity_type: z.enum([
+        "file_read",
+        "file_write",
+        "search",
+        "command",
+        "topic_shift",
+      ]).describe("Type of activity"),
+      detail: z.string().describe("Activity detail (file path, query, command, topic)"),
+      tokens: z.number().optional().describe("Estimated tokens (auto-calculated if omitted)"),
+      topic: z.string().optional().describe("Explicit topic override"),
+    },
+    async ({ activity_type, detail, tokens, topic }) => {
+      if (!config.shadow_enabled) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "Shadow log is disabled.",
+          }],
+        };
+      }
+
+      try {
+        const sessionId = getCurrentSessionId();
+        const activity = createActivity(activity_type, detail, tokens);
+        const shadow = recordActivity(sessionId, activity, topic);
+
+        // Check if nearing threshold
+        const tokenProgress = (shadow.tokens / config.shadow_token_threshold) * 100;
+        const timeProgress = (getActiveMinutes(shadow) / config.shadow_time_threshold_min) * 100;
+        const maxProgress = Math.max(tokenProgress, timeProgress);
+
+        let statusMsg = `✓ Activity logged to shadow "${shadow.topic}"`;
+        if (maxProgress >= 80) {
+          statusMsg += `\n⚡ Near promotion threshold (${Math.round(maxProgress)}%)`;
+        }
+
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `${statusMsg}\n` +
+              `Shadow: ${shadow.id}\n` +
+              `Density: ${shadow.tokens}/${config.shadow_token_threshold} tokens (${Math.round(tokenProgress)}%)\n` +
+              `Activities: ${shadow.activities.length}`,
+          }],
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Error logging activity: ${error}`,
+          }],
+        };
+      }
+    }
+  );
+
+  /**
+   * BATCH_LOG_ACTIVITIES - Record multiple activities at once
+   * Efficient for logging a sequence of operations
+   */
+  server.tool(
+    "batch_log_activities",
+    {
+      activities: z.array(z.object({
+        type: z.enum([
+          "file_read",
+          "file_write",
+          "search",
+          "command",
+          "topic_shift",
+        ]),
+        detail: z.string(),
+        tokens: z.number().optional(),
+        timestamp: z.string().optional(),
+      })).describe("Array of activities to log"),
+      topic: z.string().optional().describe("Explicit topic for all activities"),
+    },
+    async ({ activities, topic }) => {
+      if (!config.shadow_enabled) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "Shadow log is disabled.",
+          }],
+        };
+      }
+
+      try {
+        const sessionId = getCurrentSessionId();
+        let shadow = null;
+
+        for (const act of activities) {
+          const activity = createActivity(act.type, act.detail, act.tokens);
+          if (act.timestamp) {
+            activity.timestamp = act.timestamp;
+          }
+          shadow = recordActivity(sessionId, activity, topic);
+        }
+
+        if (!shadow) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "No activities logged (empty batch).",
+            }],
+          };
+        }
+
+        // Check promotion status
+        const tokenProgress = (shadow.tokens / config.shadow_token_threshold) * 100;
+        const timeProgress = (getActiveMinutes(shadow) / config.shadow_time_threshold_min) * 100;
+        const maxProgress = Math.max(tokenProgress, timeProgress);
+
+        let statusMsg = `✓ ${activities.length} activities logged to shadow "${shadow.topic}"`;
+        if (maxProgress >= 80) {
+          statusMsg += `\n⚡ Near promotion threshold (${Math.round(maxProgress)}%)`;
+        }
+
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `${statusMsg}\n` +
+              `Shadow: ${shadow.id}\n` +
+              `Density: ${shadow.tokens}/${config.shadow_token_threshold} tokens (${Math.round(tokenProgress)}%)\n` +
+              `Total activities: ${shadow.activities.length}`,
+          }],
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Error logging batch: ${error}`,
+          }],
+        };
+      }
+    }
+  );
+
   /**
    * SHADOW_STATUS - View all active shadows across sessions
    * Shows working memory state and promotion candidates
