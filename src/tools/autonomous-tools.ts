@@ -15,7 +15,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { saveMemory, searchMemories, getMemory, listMemories, getMemoryStats, getCurrentSessionId, addMemoryToSession } from "../db.js";
+import { saveMemory, getMemory, listMemories, getMemoryStats, getCurrentSessionId, addMemoryToSession } from "../db.js";
 import { config } from "../config.js";
 import { detectMemoryType, detectTags, estimateImportance } from "../intelligence.js";
 import { detectTrigger, extractMemorablePoints, detectClaudeInsights, analyzeConversationTurn, detectSemanticSignal } from "../autonomous.js";
@@ -24,6 +24,7 @@ import type { MemoryType } from "../types.js";
 import { listActiveShadows, getShadowEntry, checkPromotionThresholds, getRecentlyPromoted, finalizeShadow, getActiveMinutes, formatShadowForClaude, getSessionShadows } from "../shadow-log.js";
 import { recordToolActivity } from "./shadow-tools.js";
 import { checkDuplicates } from "../dedupe.js";
+import { searchWithContext } from "../search-service.js";
 
 const alignmentEngine = new SmartAlignmentEngine({ autoSaveEnabled: true, userTriggerThreshold: 0.7, claudeInsightThreshold: 0.75 });
 
@@ -59,7 +60,7 @@ export function registerAutonomousTools(server: McpServer): void {
       if (decs.length > 0) { sections.push(`\n\u{1f3af} RECENT DECISIONS (${decs.length}):\n${decs.map((d) => `  \u2022 ${d.content.slice(0, 120)}${d.content.length > 120 ? "..." : ""}`).join("\n")}`); }
       const pats = await listMemories({ limit: Math.max(3, limit - 2), project: project || undefined, type: "pattern", sortBy: "importance" });
       if (pats.length > 0) { sections.push(`\n\u{1f504} ACTIVE PATTERNS (${pats.length}):\n${pats.map((p) => `  \u2022 ${p.content.slice(0, 100)}${p.content.length > 100 ? "..." : ""}`).join("\n")}`); }
-      if (topic) { const tm = await searchMemories(topic, { limit, project: project || undefined }); if (tm.length > 0) { sections.push(`\n\u{1f3af} CONTEXT FOR "${topic}" (${tm.length}):\n${tm.map((m) => `  [${m.type}] ${m.content.slice(0, 100)}${m.content.length > 100 ? "..." : ""} (${Math.round(m.score * 100)}%)`).join("\n")}`); } }
+      if (topic) { const tm = await searchWithContext(topic, { limit, project }); if (tm.length > 0) { sections.push(`\n\u{1f3af} CONTEXT FOR "${topic}" (${tm.length}):\n${tm.map((m) => `  [${m.type}] ${m.content.slice(0, 100)}${m.content.length > 100 ? "..." : ""} (${Math.round(m.score * 100)}%)`).join("\n")}`); } }
       const lrn = await listMemories({ limit: Math.max(2, limit - 3), project: project || undefined, type: "learning", sortBy: "recent" });
       if (lrn.length > 0) { sections.push(`\n\u{1f4da} RECENT LEARNINGS (${lrn.length}):\n${lrn.map((l) => `  \u{1f4a1} ${l.content.slice(0, 100)}${l.content.length > 100 ? "..." : ""}`).join("\n")}`); }
       sections.push(`\n${"\u2500".repeat(60)}\nSoul is primed and ready. Context loaded at ${depth} depth.\nUse 'align' for deeper topic focus, 'recall' to search memories.`);
@@ -122,7 +123,7 @@ export function registerAutonomousTools(server: McpServer): void {
   server.tool("align", { topic: z.string().describe("The topic or area to align with"), depth: z.enum(["shallow", "normal", "deep"]).optional().default("normal") },
     async ({ topic, depth }) => {
       const limits = { shallow: 3, normal: 7, deep: 15 }; const limit = limits[depth];
-      const memories = await searchMemories(topic, { limit, project: config.current_project });
+      const memories = await searchWithContext(topic, { limit });
       if (memories.length === 0) { return { content: [{ type: "text" as const, text: `No memories found for topic: "${topic}"\n\nStarting fresh on this topic.` }] }; }
       const byType: Record<string, typeof memories> = {}; for (const m of memories) { if (!byType[m.type]) byType[m.type] = []; byType[m.type].push(m); }
       const sections: string[] = []; const typeOrder: MemoryType[] = ["decision", "pattern", "context", "learning", "preference", "todo", "reference"];
@@ -148,7 +149,7 @@ export function registerAutonomousTools(server: McpServer): void {
 
   server.tool("assimilate", { content: z.string().describe("New information to assimilate"), merge_threshold: z.number().min(0).max(1).optional().default(0.7) },
     async ({ content, merge_threshold }) => {
-      const similar = await searchMemories(content, { limit: 5 }); const closeMatches = similar.filter((m) => m.score >= merge_threshold);
+      const similar = await searchWithContext(content, { limit: 5 }); const closeMatches = similar.filter((m) => m.score >= merge_threshold);
       if (closeMatches.length === 0) {
         const type = detectMemoryType(content); const tags = detectTags(content); const importance = estimateImportance(content);
         const id = await saveMemory({ content, type, tags, importance, project: config.current_project, session_id: getCurrentSessionId(), timestamp: new Date().toISOString() });

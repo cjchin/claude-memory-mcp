@@ -15,7 +15,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
   saveMemory,
-  searchMemories,
   getMemory,
   updateMemory,
   deleteMemory,
@@ -30,6 +29,7 @@ import { cleanText, extractEntities, extractReasoning } from "../preprocess.js";
 import type { MemoryType } from "../types.js";
 import { recordToolActivity } from "./shadow-tools.js";
 import { checkDuplicates } from "../dedupe.js";
+import { searchWithContext } from "../search-service.js";
 
 export function registerCoreTools(server: McpServer): void {
   // Save a memory with auto-detection
@@ -119,11 +119,11 @@ export function registerCoreTools(server: McpServer): void {
     async ({ query, limit, types, tags, project, min_importance }) => {
       recordToolActivity("search", `recall: ${query}`);
 
-      const memories = await searchMemories(query, {
+      const memories = await searchWithContext(query, {
         limit,
         types: types as MemoryType[] | undefined,
         tags,
-        project: project || config.current_project,
+        project,
         minImportance: min_importance,
       });
 
