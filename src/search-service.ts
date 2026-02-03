@@ -59,7 +59,7 @@ export async function searchWithContext(
   options: SearchOptions = {}
 ) {
   // Normalize project: use provided value, fallback to current_project, or undefined for all projects
-  const project = options.project !== undefined
+  const project = "project" in options
     ? options.project
     : (config.current_project || undefined);
 
