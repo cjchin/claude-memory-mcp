@@ -37,7 +37,12 @@ node dist/cli.js consolidate --dry-run  # Preview consolidations
 | `src/dream.ts` | Background consolidation, contradiction detection |
 | `src/graph-enrichment.ts` | Semantic link analysis |
 | `src/llm.ts` | LLM abstraction layer |
+| `src/dedupe.ts` | **NEW** Deduplication thresholds and logic |
+| `src/search-service.ts` | **NEW** Unified search abstraction |
 | `src/tools/*.ts` | 11 modular tool definition files |
+| `src/tools/state.ts` | **NEW** Session-scoped state management |
+| `src/tools/error-handler.ts` | **NEW** Unified error handling patterns |
+| `src/tools/formatters.ts` | **NEW** Shared output formatting utilities |
 
 ---
 

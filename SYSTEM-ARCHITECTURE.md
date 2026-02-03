@@ -1078,6 +1078,70 @@ npm run build && npm test
 
 ---
 
+## Recent Refactoring (2026-02-02)
+
+### Code Quality Improvements (Phases 1-7)
+
+A comprehensive refactoring was completed to improve code maintainability, reliability, and testability:
+
+#### **Phase 1: Fix Immediate Bugs**
+- Removed duplicate `consciousReviewState` definition in dream-tools.ts
+- Added error handling to graph-tools.ts, policy-tools.ts, session-tools.ts
+- Enhanced error logging in bulk operations
+
+#### **Phase 2: Centralize Deduplication Logic**
+- Created `src/dedupe.ts` with named threshold constants:
+  - `STRICT: 0.9` - for explicit saving (remember)
+  - `STANDARD: 0.85` - for automatic operations (conclude, synthesize)
+  - `LOOSE: 0.7` - for find_similar queries
+  - `AUTOMATIC: 0.8` - for general use
+- Replaced scattered thresholds across 6+ files with `checkDuplicates()` function
+- Improved consistency and maintainability
+
+#### **Phase 3: Extract Search Abstraction**
+- Created `src/search-service.ts` for centralized search logic
+- Unified project fallback: uses `current_project` when not specified
+- Added `searchWithContext()`, `searchCurrentProject()`, `searchAllProjects()` helpers
+- Eliminated 20+ duplicate parameter normalizations across tools
+
+#### **Phase 4: Unified Error Handling**
+- Created `src/tools/error-handler.ts` with standard patterns
+- `toolSafeWrapper()` - catches errors and returns user-friendly responses
+- `withRetry()` - exponential backoff for transient failures
+- `errorResponse()` - standardized error formatting
+
+#### **Phase 5: Extract Reporting Utilities**
+- Created `src/tools/formatters.ts` with shared formatting functions
+- Headers, tables, progress bars, dividers, truncation
+- Consistent output formatting across all tools
+- Reduced code duplication in tool responses
+
+#### **Phase 6: Fix State Management Issues**
+- Created `src/tools/state.ts` for session-scoped state management
+- Replaced global `consciousReviewState` with `getReviewSession(sessionId)`
+- Prevents state leaks between concurrent sessions
+- Automatic stale session cleanup (10-minute interval)
+- Supports multi-user/multi-session environments
+
+#### **Phase 7: Testing and Documentation**
+- Added 97 comprehensive unit tests (506 → 603 total)
+- 100% coverage for new utility modules:
+  - `tests/unit/dedupe.test.ts` - deduplication logic
+  - `tests/unit/search-service.test.ts` - search abstractions
+  - `tests/unit/formatters.test.ts` - formatting utilities
+  - `tests/unit/error-handler.test.ts` - error handling
+  - `tests/unit/state.test.ts` - session management
+- All tests passing: 603/603 ✓
+
+#### **Benefits**
+- **Better maintainability**: Centralized utilities reduce duplication
+- **Improved reliability**: Consistent error handling prevents crashes
+- **Higher testability**: Modular architecture enables unit testing
+- **Scalability**: Session-scoped state supports concurrent usage
+- **Backward compatible**: No breaking changes to existing functionality
+
+---
+
 ## Summary
 
 **Soul-MCP** is a cognitive architecture for Claude that provides:
@@ -1090,7 +1154,7 @@ npm run build && npm test
 6. **Temporal reasoning** for belief evolution
 7. **Modular tool architecture** for extensibility
 
-The system is production-ready with 483 passing tests and supports local-first operation with optional LLM enhancement.
+The system is production-ready with 603 passing tests and supports local-first operation with optional LLM enhancement.
 
 **Next steps**: Walker agents, multi-instance sync, temporal queries.
 
