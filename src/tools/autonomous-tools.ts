@@ -28,6 +28,7 @@ import { searchWithContext } from "../search-service.js";
 import { filterByEmotion, detectEmotionalShift, inferEmotionalContext } from "../emotional-intelligence.js";
 import { inferNarrativeRole, detectStoryArcs, analyzeNarrativeStructure } from "../narrative-intelligence.js";
 import { findConflicts } from "../multi-agent.js";
+import { getCollectiveIntelligenceSummary, isTrending, calculateQualityScore } from "../social-intelligence.js";
 
 const alignmentEngine = new SmartAlignmentEngine({ autoSaveEnabled: true, userTriggerThreshold: 0.7, claudeInsightThreshold: 0.75 });
 
@@ -137,6 +138,46 @@ export function registerAutonomousTools(server: McpServer): void {
           }
         } else if (consensusCount.agreed > 0) {
           sections.push(`  \u2705 Status: ${consensusCount.agreed} agreed, ${consensusCount.pending} pending`);
+        }
+      }
+
+      // SOCIAL COGNITION (v3.0 Phase 4)
+      const socialMems = recentMems.filter((m: Memory) => m.social_context !== undefined);
+      if (socialMems.length > 0 && depth !== "quick") {
+        const summary = getCollectiveIntelligenceSummary(socialMems);
+        const trending = socialMems.filter((m) => isTrending(m));
+        const highQuality = socialMems.filter((m) => {
+          const quality = calculateQualityScore(m);
+          return quality >= 0.75;
+        });
+
+        sections.push(`\n\u{1f9e0} SOCIAL COGNITION (${socialMems.length} memories):`);
+
+        if (summary.total_endorsements > 0) {
+          sections.push(`  \u{1f4ca} Endorsements: ${summary.total_endorsements} total`);
+          sections.push(`  \u2705 High consensus: ${summary.high_consensus_count} memories`);
+          if (summary.controversial_count > 0) {
+            sections.push(`  \u26a0\ufe0f Controversial: ${summary.controversial_count} memories`);
+          }
+        }
+
+        if (trending.length > 0) {
+          sections.push(`  \u{1f525} Trending: ${trending.length} memories (recent attention spike)`);
+        }
+
+        if (highQuality.length > 0) {
+          sections.push(`  \u2b50 High quality: ${highQuality.length} memories (>75% quality score)`);
+        }
+
+        if (summary.thought_leaders.size > 0) {
+          const topLeaders = Array.from(summary.thought_leaders.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3);
+          sections.push(`  \u{1f451} Thought leaders: ${topLeaders.map(([id, count]) => `${id}(${count})`).join(", ")}`);
+        }
+
+        if (summary.average_quality > 0) {
+          sections.push(`  \u{1f4af} Average quality: ${(summary.average_quality * 100).toFixed(0)}%`);
         }
       }
 
@@ -274,6 +315,166 @@ export function registerAutonomousTools(server: McpServer): void {
         if (auto_save && insight.confidence >= 0.7) { const id = await saveMemory({ content: insight.extractedContent || "", type: insight.memoryType || "learning", tags: [...(insight.suggestedTags || []), "claude-insight"], importance: boosted, project: config.current_project, session_id: getCurrentSessionId(), timestamp: new Date().toISOString(), metadata: { source: "claude-reflection", signal: signal.signal } }); results.push(`[SAVED] ${insight.memoryType?.toUpperCase()} \u2192 ${id}\n  "${insight.extractedContent?.slice(0, 80)}..."\n  Importance: ${boosted}/5 (boosted by ${signal.signal} signal)`);
         } else { results.push(`[DETECTED] ${insight.memoryType?.toUpperCase()} (${Math.round(insight.confidence * 100)}%)\n  "${insight.extractedContent?.slice(0, 80)}..."`); } }
       return { content: [{ type: "text" as const, text: results.join("\n\n") }] };
+    }
+  );
+
+  // Soul health dashboard - Cross-layer analytics (v3.0 Phase 5)
+  server.tool("soul_health", { project: z.string().optional().describe("Filter by project"), include_recommendations: z.boolean().optional().default(true).describe("Include actionable recommendations") },
+    async ({ project, include_recommendations }) => {
+      const stats = await getMemoryStats();
+      const sessionId = getCurrentSessionId();
+      const projectFilter = project || config.current_project;
+
+      // Get recent memories for analysis
+      const recentMems = await listMemories({ limit: 100, project: projectFilter, sortBy: "recent" });
+
+      const sections: string[] = [];
+      sections.push(`╔${"═".repeat(62)}╗`);
+      sections.push(`║              SOUL HEALTH DASHBOARD                     ║`);
+      sections.push(`╚${"═".repeat(62)}╝\n`);
+      sections.push(`Session: ${sessionId}`);
+      sections.push(`Project: ${projectFilter || "none"}`);
+      sections.push(`Total Memories: ${stats.total}\n`);
+
+      // Layer 1: Emotional Intelligence Health
+      const emotionalMems = recentMems.filter((m: Memory) => m.emotional_context !== undefined);
+      sections.push(`━━━ EMOTIONAL INTELLIGENCE ━━━`);
+      sections.push(`Coverage: ${emotionalMems.length}/${recentMems.length} memories (${Math.round((emotionalMems.length / recentMems.length) * 100)}%)`);
+
+      if (emotionalMems.length > 0) {
+        let totalValence = 0;
+        let totalArousal = 0;
+        for (const mem of emotionalMems) {
+          totalValence += mem.emotional_context!.valence;
+          totalArousal += mem.emotional_context!.arousal;
+        }
+        const avgValence = totalValence / emotionalMems.length;
+        const avgArousal = totalArousal / emotionalMems.length;
+
+        const profileEmoji = avgValence > 0.3 ? "😊" : avgValence < -0.3 ? "😔" : "😐";
+        const energyEmoji = avgArousal > 0.6 ? "⚡" : avgArousal < 0.3 ? "😌" : "~";
+
+        sections.push(`Emotional Profile: ${profileEmoji} ${avgValence > 0.3 ? "positive" : avgValence < -0.3 ? "negative" : "neutral"} (${avgValence.toFixed(2)})`);
+        sections.push(`Energy Level: ${energyEmoji} ${avgArousal > 0.6 ? "high" : avgArousal < 0.3 ? "low" : "medium"} (${avgArousal.toFixed(2)})`);
+        sections.push(`Health: ${emotionalMems.length >= 10 ? "✅ Good" : "⚠️ Limited data"}\n`);
+      } else {
+        sections.push(`Health: ❌ No emotional data\n`);
+      }
+
+      // Layer 2: Narrative Intelligence Health
+      const narrativeMems = recentMems.filter((m: Memory) => m.narrative_context !== undefined);
+      sections.push(`━━━ NARRATIVE INTELLIGENCE ━━━`);
+      sections.push(`Coverage: ${narrativeMems.length}/${recentMems.length} memories (${Math.round((narrativeMems.length / recentMems.length) * 100)}%)`);
+
+      if (narrativeMems.length > 0) {
+        const narrativeStats = analyzeNarrativeStructure(narrativeMems);
+        const arcs = detectStoryArcs(narrativeMems.slice(0, 50));
+
+        sections.push(`Story Arcs: ${arcs.length} detected`);
+        sections.push(`Turning Points: ${narrativeStats.turning_points}`);
+
+        const progression = Object.entries(narrativeStats.role_distribution).filter(([_, count]) => count > 0);
+        if (progression.length > 0) {
+          sections.push(`Progression: ${progression.map(([role, count]) => `${role}(${count})`).join(", ")}`);
+        }
+
+        const health = arcs.length >= 2 && narrativeStats.turning_points > 0 ? "✅ Good" : arcs.length > 0 ? "⚠️ Developing" : "❌ Weak";
+        sections.push(`Health: ${health}\n`);
+      } else {
+        sections.push(`Health: ❌ No narrative data\n`);
+      }
+
+      // Layer 3: Multi-Agent Intelligence Health
+      const multiAgentMems = recentMems.filter((m: Memory) => m.multi_agent_context !== undefined);
+      sections.push(`━━━ MULTI-AGENT COLLABORATION ━━━`);
+      sections.push(`Coverage: ${multiAgentMems.length}/${recentMems.length} memories (${Math.round((multiAgentMems.length / recentMems.length) * 100)}%)`);
+
+      if (multiAgentMems.length > 0) {
+        const agentTypes = new Set(multiAgentMems.map((m) => m.multi_agent_context?.created_by?.agent_type).filter(Boolean));
+        const consensusCount = { agreed: 0, disputed: 0, pending: 0, resolved: 0 };
+
+        for (const mem of multiAgentMems) {
+          const status = mem.multi_agent_context?.consensus_status;
+          if (status) consensusCount[status]++;
+        }
+
+        sections.push(`Active Agents: ${agentTypes.size} types`);
+        sections.push(`Consensus: ${consensusCount.agreed} agreed, ${consensusCount.disputed} disputed`);
+
+        const conflictRate = consensusCount.disputed / multiAgentMems.length;
+        const health = conflictRate < 0.1 ? "✅ Good" : conflictRate < 0.3 ? "⚠️ Moderate conflicts" : "❌ High conflict";
+        sections.push(`Health: ${health}\n`);
+      } else {
+        sections.push(`Health: ⚠️ Single agent (no collaboration)\n`);
+      }
+
+      // Layer 4: Social Cognition Health
+      const socialMems = recentMems.filter((m: Memory) => m.social_context !== undefined);
+      sections.push(`━━━ SOCIAL COGNITION ━━━`);
+      sections.push(`Coverage: ${socialMems.length}/${recentMems.length} memories (${Math.round((socialMems.length / recentMems.length) * 100)}%)`);
+
+      if (socialMems.length > 0) {
+        const summary = getCollectiveIntelligenceSummary(socialMems);
+        const trending = socialMems.filter((m) => isTrending(m));
+
+        sections.push(`Endorsements: ${summary.total_endorsements} total`);
+        sections.push(`Consensus: ${summary.high_consensus_count} high, ${summary.controversial_count} controversial`);
+        sections.push(`Trending: ${trending.length} memories`);
+        sections.push(`Quality: ${(summary.average_quality * 100).toFixed(0)}% average`);
+
+        const health = summary.total_endorsements >= 10 && summary.average_quality > 0.6 ? "✅ Good" : summary.total_endorsements > 0 ? "⚠️ Building" : "❌ No engagement";
+        sections.push(`Health: ${health}\n`);
+      } else {
+        sections.push(`Health: ❌ No social data\n`);
+      }
+
+      // Overall Soul Health Score
+      sections.push(`━━━ OVERALL SOUL HEALTH ━━━`);
+      const coverages = [
+        emotionalMems.length / Math.max(1, recentMems.length),
+        narrativeMems.length / Math.max(1, recentMems.length),
+        multiAgentMems.length / Math.max(1, recentMems.length),
+        socialMems.length / Math.max(1, recentMems.length),
+      ];
+      const avgCoverage = coverages.reduce((sum, c) => sum + c, 0) / coverages.length;
+      const overallScore = avgCoverage * 100;
+
+      let overallHealth = "❌ Critical";
+      if (overallScore >= 75) overallHealth = "✅ Excellent";
+      else if (overallScore >= 50) overallHealth = "⚠️ Good";
+      else if (overallScore >= 25) overallHealth = "⚠️ Developing";
+
+      sections.push(`Overall Score: ${overallScore.toFixed(0)}%`);
+      sections.push(`Status: ${overallHealth}\n`);
+
+      // Recommendations
+      if (include_recommendations) {
+        sections.push(`━━━ RECOMMENDATIONS ━━━`);
+        const recommendations: string[] = [];
+
+        if (emotionalMems.length / recentMems.length < 0.5) {
+          recommendations.push("💡 Emotional: Add emotional context to memories using 'remember' tool");
+        }
+        if (narrativeMems.length / recentMems.length < 0.5) {
+          recommendations.push("💡 Narrative: Create memory sequences with clear story arcs");
+        }
+        if (multiAgentMems.length === 0) {
+          recommendations.push("💡 Multi-Agent: Use 'register_agent' to enable collaboration tracking");
+        }
+        if (socialMems.length === 0) {
+          recommendations.push("💡 Social: Use 'endorse_memory' to build social proof");
+        }
+
+        if (recommendations.length === 0) {
+          sections.push("✨ All systems healthy! Keep up the good work.");
+        } else {
+          for (const rec of recommendations) {
+            sections.push(rec);
+          }
+        }
+      }
+
+      return { content: [{ type: "text" as const, text: sections.join("\n") }] };
     }
   );
 }
