@@ -85,6 +85,9 @@ export interface Memory {
 
   // Multi-Agent Intelligence (v3.0 Phase 3)
   multi_agent_context?: MultiAgentContext; // Optional multi-agent metadata
+
+  // Social Cognition (v3.0 Phase 4)
+  social_context?: SocialContext;          // Optional social intelligence metadata
 }
 
 export interface Session {
@@ -384,6 +387,96 @@ export interface MultiAgentContext {
   // Metadata
   collaboration_session?: string;      // Session ID if created in collaboration
   detected_by?: "explicit" | "inferred" | "consensus"; // Origin of multi-agent data
+}
+
+// ============================================================================
+// Social Cognition Types - Phase 4 of v3.0 Evolution
+// ============================================================================
+
+/**
+ * Endorsement types for memories
+ */
+export type EndorsementType =
+  | "verified"      // Agent verified this is correct
+  | "useful"        // Agent found this useful
+  | "important"     // Agent considers this important
+  | "question"      // Agent questions this
+  | "outdated";     // Agent thinks this is no longer relevant
+
+/**
+ * Endorsement from an agent
+ */
+export interface Endorsement {
+  agent_id: string;              // Agent who endorsed
+  type: EndorsementType;         // Type of endorsement
+  timestamp: string;             // When endorsed
+  comment?: string;              // Optional comment
+  weight?: number;               // Weight based on agent trust (0-1)
+}
+
+/**
+ * Knowledge diffusion tracking - how knowledge spreads between agents
+ */
+export interface DiffusionPath {
+  from_agent: string;            // Source agent
+  to_agent: string;              // Target agent
+  timestamp: string;             // When knowledge was shared
+  mechanism: "share" | "cite" | "reference" | "validate"; // How it spread
+}
+
+/**
+ * Social context for memories
+ *
+ * Tracks collective intelligence, knowledge diffusion, and social proof.
+ * Complements multi-agent context with population-level patterns.
+ */
+export interface SocialContext {
+  // Discovery and attribution
+  discoverer?: string;           // Agent who first introduced this knowledge
+  discovery_timestamp?: string;  // When this was first known
+
+  // Endorsements and social proof
+  endorsements?: Endorsement[];  // All endorsements from agents
+  endorsement_summary?: {        // Summary statistics
+    verified: number;
+    useful: number;
+    important: number;
+    questioned: number;
+    outdated: number;
+  };
+
+  // Influence and impact
+  citation_count?: number;       // How many memories reference this
+  reference_count?: number;      // How many times agents accessed this
+  influence_score?: number;      // PageRank-style influence (0-1)
+
+  // Knowledge diffusion
+  diffusion_paths?: DiffusionPath[];  // How this knowledge spread
+  reach?: number;                     // Number of unique agents aware
+  adoption_rate?: number;             // % of agents who endorsed (0-1)
+
+  // Collective intelligence
+  consensus_level?: number;      // Population agreement (0-1)
+  controversy_score?: number;    // Level of disagreement (0-1)
+  stability_score?: number;      // How stable over time (0-1)
+
+  // Thought leadership
+  thought_leaders?: string[];    // Agents who champion this knowledge
+  domain_experts?: string[];     // Domain experts who validated
+
+  // Temporal patterns
+  trending_score?: number;       // Recent attention increase (0-1)
+  peak_interest?: string;        // When interest was highest
+  decay_rate?: number;           // How fast interest is declining
+
+  // Quality signals
+  average_trust?: number;        // Weighted average of endorser trust
+  collective_confidence?: number; // Population confidence (0-1)
+  quality_score?: number;        // Computed quality metric (0-1)
+
+  // Metadata
+  last_social_update?: string;   // When social metrics last computed
+  computed_by?: string;          // Agent/system that computed metrics
 }
 
 // ============================================================================
