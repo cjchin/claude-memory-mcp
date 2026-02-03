@@ -82,6 +82,9 @@ export interface Memory {
 
   // Narrative Intelligence (v3.0 Phase 2)
   narrative_context?: NarrativeContext;    // Optional narrative metadata
+
+  // Multi-Agent Intelligence (v3.0 Phase 3)
+  multi_agent_context?: MultiAgentContext; // Optional multi-agent metadata
 }
 
 export interface Session {
@@ -291,6 +294,96 @@ export interface NarrativeContext {
   // Confidence and source
   narrative_confidence?: number;       // 0-1, how confident the inference is
   detected_by?: "explicit" | "inferred" | "llm_assisted"; // Origin of narrative data
+}
+
+// ============================================================================
+// Multi-Agent Intelligence Types - Phase 3 of v3.0 Evolution
+// ============================================================================
+
+/**
+ * Agent type classification
+ */
+export type AgentType =
+  | "claude"      // Claude AI agent (Sonnet, Opus, etc.)
+  | "human"       // Human user
+  | "walker"      // Autonomous walker agent
+  | "custom";     // Custom agent implementation
+
+/**
+ * Agent identity and capabilities
+ *
+ * Represents an individual agent that can create and access memories
+ * in the shared soul system.
+ */
+export interface AgentIdentity {
+  agent_id: string;                    // Unique agent identifier
+  agent_name?: string;                 // Human-readable name
+  agent_type: AgentType;               // Type of agent
+  trust_level?: number;                // 0-1, how much to trust this agent
+  capabilities?: string[];             // What this agent can do
+  created_at?: string;                 // When agent was registered
+  last_active?: string;                // Last time agent accessed soul
+}
+
+/**
+ * Memory access control
+ */
+export interface MemoryACL {
+  read_access: string[];               // Agent IDs with read permission
+  write_access: string[];              // Agent IDs with write permission
+  owner: string;                       // Agent ID of memory owner
+  visibility: "private" | "team" | "public"; // Visibility level
+}
+
+/**
+ * Consensus status for memories with multiple contributors
+ */
+export type ConsensusStatus =
+  | "agreed"      // All agents agree on this memory
+  | "disputed"    // Agents disagree, needs resolution
+  | "pending"     // Awaiting input from more agents
+  | "resolved";   // Disagreement resolved through process
+
+/**
+ * Multi-agent context for memories
+ *
+ * Tracks collaboration, consensus, and shared knowledge across agents.
+ */
+export interface MultiAgentContext {
+  // Collaboration tracking
+  created_by?: AgentIdentity;          // Agent that created this memory
+  contributors?: AgentIdentity[];      // Agents that contributed to this memory
+  last_modified_by?: string;           // Agent ID of last modifier
+
+  // Consensus tracking
+  consensus_status?: ConsensusStatus;  // Agreement status
+  agreed_by?: string[];                // Agent IDs that agree
+  disputed_by?: string[];              // Agent IDs that dispute
+  dispute_reason?: string;             // Why agents disagree
+
+  // Conflict resolution
+  resolution_method?: "vote" | "synthesize" | "defer_expert" | "accept_both"; // How conflict was resolved
+  resolution_timestamp?: string;       // When conflict was resolved
+  resolver_agent?: string;             // Agent ID that resolved conflict
+
+  // Access control
+  acl?: MemoryACL;                     // Access control list
+
+  // Shared knowledge
+  shared_with?: Array<{                // Agents this was explicitly shared with
+    agent_id: string;
+    shared_at: string;
+    reason?: string;
+  }>;
+
+  // Confidence and validation
+  validation_count?: number;           // How many agents validated this
+  validators?: string[];               // Agent IDs that validated
+  crowd_confidence?: number;           // 0-1, collective confidence
+
+  // Metadata
+  collaboration_session?: string;      // Session ID if created in collaboration
+  detected_by?: "explicit" | "inferred" | "consensus"; // Origin of multi-agent data
 }
 
 // ============================================================================
