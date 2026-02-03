@@ -30,6 +30,8 @@ import {
   type ContradictionCandidate,
   type ConsolidationCandidate,
 } from "../dream.js";
+import { getReviewSession } from "./state.js";
+import { getCurrentSessionId } from "../db.js";
 
 export function registerDreamTools(server: McpServer): void {
 // ============ DREAM STATE - MEMORY REORGANIZATION ============
@@ -329,14 +331,8 @@ server.tool(
  * 3. apply_* tool executes Claude's decision
  */
 
-// In-memory queue for conscious review (cleared on restart)
-const consciousReviewState = {
-  contradictions: [] as ContradictionCandidate[],
-  consolidations: [] as ConsolidationCandidate[],
-  currentContradictionIndex: 0,
-  currentConsolidationIndex: 0,
-  initialized: false,
-};
+// Note: Review state is now managed per-session via getReviewSession()
+// from state.ts. State is still in-memory and cleared on restart.
 
 /**
  * REVIEW_CONTRADICTION - Pull ONE contradiction for conscious evaluation.
@@ -360,34 +356,36 @@ server.tool(
       .describe("Skip current and move to next without resolving"),
   },
   async ({ refresh, project, skip }) => {
+    const session = getReviewSession(getCurrentSessionId());
+
     // Skip if requested
-    if (skip && consciousReviewState.contradictions.length > 0) {
-      consciousReviewState.currentContradictionIndex++;
+    if (skip && session.contradictions.length > 0) {
+      session.currentContradictionIndex++;
     }
 
     // Refresh or initialize the queue
-    if (refresh || !consciousReviewState.initialized || consciousReviewState.contradictions.length === 0) {
+    if (refresh || !session.initialized || session.contradictions.length === 0) {
       const memories = await listMemories({
         limit: 500,
         project: project || undefined,
       });
 
-      consciousReviewState.contradictions = [];
+      session.contradictions = [];
       for (let i = 0; i < memories.length; i++) {
         for (let j = i + 1; j < memories.length; j++) {
           const conflict = detectContradiction(memories[i], memories[j]);
           if (conflict && conflict.confidence >= 0.6) {
-            consciousReviewState.contradictions.push(conflict);
+            session.contradictions.push(conflict);
           }
         }
       }
-      consciousReviewState.contradictions.sort((a, b) => b.confidence - a.confidence);
-      consciousReviewState.currentContradictionIndex = 0;
-      consciousReviewState.initialized = true;
+      session.contradictions.sort((a, b) => b.confidence - a.confidence);
+      session.currentContradictionIndex = 0;
+      session.initialized = true;
     }
 
-    const idx = consciousReviewState.currentContradictionIndex;
-    const total = consciousReviewState.contradictions.length;
+    const idx = session.currentContradictionIndex;
+    const total = session.contradictions.length;
 
     if (idx >= total) {
       return {
@@ -398,7 +396,7 @@ server.tool(
       };
     }
 
-    const c = consciousReviewState.contradictions[idx];
+    const c = session.contradictions[idx];
     const emoji = c.conflict_type === "temporal" ? "🕐" : "❌";
 
     const text = `
@@ -462,8 +460,9 @@ server.tool(
       .describe("Your reasoning for this decision (stored for learning)"),
   },
   async ({ action, merged_content, reasoning }) => {
-    const idx = consciousReviewState.currentContradictionIndex;
-    if (idx >= consciousReviewState.contradictions.length) {
+    const session = getReviewSession(getCurrentSessionId());
+    const idx = session.currentContradictionIndex;
+    if (idx >= session.contradictions.length) {
       return {
         content: [{
           type: "text" as const,
@@ -472,7 +471,7 @@ server.tool(
       };
     }
 
-    const c = consciousReviewState.contradictions[idx];
+    const c = session.contradictions[idx];
     let resultText = "";
 
     try {
@@ -534,8 +533,8 @@ server.tool(
       }
 
       // Move to next
-      consciousReviewState.currentContradictionIndex++;
-      const remaining = consciousReviewState.contradictions.length - consciousReviewState.currentContradictionIndex;
+      session.currentContradictionIndex++;
+      const remaining = session.contradictions.length - session.currentContradictionIndex;
       
       resultText += `\n\n${remaining} contradiction(s) remaining.`;
       if (remaining > 0) {
@@ -586,13 +585,15 @@ server.tool(
       .describe("Skip current without merging"),
   },
   async ({ refresh, similarity_threshold, project, skip }) => {
+    const session = getReviewSession(getCurrentSessionId());
+
     // Skip if requested
-    if (skip && consciousReviewState.consolidations.length > 0) {
-      consciousReviewState.currentConsolidationIndex++;
+    if (skip && session.consolidations.length > 0) {
+      session.currentConsolidationIndex++;
     }
 
     // Refresh or initialize
-    if (refresh || consciousReviewState.consolidations.length === 0) {
+    if (refresh || session.consolidations.length === 0) {
       const memories = await listMemories({
         limit: 200, // Embeddings are expensive
         project: project || undefined,
@@ -607,15 +608,15 @@ server.tool(
         };
       }
 
-      consciousReviewState.consolidations = await findConsolidationCandidatesWithEmbeddings(
-        memories, 
+      session.consolidations = await findConsolidationCandidatesWithEmbeddings(
+        memories,
         similarity_threshold
       );
-      consciousReviewState.currentConsolidationIndex = 0;
+      session.currentConsolidationIndex = 0;
     }
 
-    const idx = consciousReviewState.currentConsolidationIndex;
-    const total = consciousReviewState.consolidations.length;
+    const idx = session.currentConsolidationIndex;
+    const total = session.consolidations.length;
 
     if (idx >= total) {
       return {
@@ -626,7 +627,7 @@ server.tool(
       };
     }
 
-    const c = consciousReviewState.consolidations[idx];
+    const c = session.consolidations[idx];
     
     let memoriesText = "";
     for (let i = 0; i < c.memories.length; i++) {
@@ -699,8 +700,9 @@ server.tool(
       .describe("Your reasoning for merge decisions"),
   },
   async ({ action, merged_content, merged_tags, merged_importance, reasoning }) => {
-    const idx = consciousReviewState.currentConsolidationIndex;
-    if (idx >= consciousReviewState.consolidations.length) {
+    const session = getReviewSession(getCurrentSessionId());
+    const idx = session.currentConsolidationIndex;
+    if (idx >= session.consolidations.length) {
       return {
         content: [{
           type: "text" as const,
@@ -709,7 +711,7 @@ server.tool(
       };
     }
 
-    const c = consciousReviewState.consolidations[idx];
+    const c = session.consolidations[idx];
     let resultText = "";
 
     try {
@@ -777,8 +779,8 @@ server.tool(
       }
 
       // Move to next
-      consciousReviewState.currentConsolidationIndex++;
-      const remaining = consciousReviewState.consolidations.length - consciousReviewState.currentConsolidationIndex;
+      session.currentConsolidationIndex++;
+      const remaining = session.consolidations.length - session.currentConsolidationIndex;
       
       resultText += `\n\n${remaining} consolidation candidate(s) remaining.`;
       if (remaining > 0) {
