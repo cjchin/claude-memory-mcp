@@ -18,3 +18,4 @@ export { registerDreamTools } from "./dream-tools.js";
 export { registerAutonomousTools } from "./autonomous-tools.js";
 export { registerConsolidationTools } from "./consolidation-tools.js";
 export { registerContradictionTools } from "./contradiction-tools.js";
+export { registerStatusTools } from "./status-tools.js";
