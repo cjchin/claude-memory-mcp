@@ -51,6 +51,10 @@ export interface Config {
   // Projects
   current_project?: string;
   projects: Record<string, { description?: string; tech_stack?: string[] }>;
+
+  // Multi-agent settings (v3.0 Phase 3)
+  current_agent_id?: string;     // Agent ID for the current user/system
+  current_agent_type?: "claude" | "human" | "walker" | "custom";
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -77,6 +81,9 @@ const DEFAULT_CONFIG: Config = {
   shadow_surface_in_conclude: true, // Show shadows in conclude
   shadow_surface_threshold: 0.6,   // Surface at 60% of threshold
   projects: {},
+  // Multi-agent defaults
+  current_agent_id: "human_user",   // Default agent ID
+  current_agent_type: "human",      // Default agent type
 };
 
 const CONFIG_DIR = join(homedir(), ".claude-memory");

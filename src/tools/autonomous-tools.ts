@@ -27,6 +27,7 @@ import { checkDuplicates } from "../dedupe.js";
 import { searchWithContext } from "../search-service.js";
 import { filterByEmotion, detectEmotionalShift, inferEmotionalContext } from "../emotional-intelligence.js";
 import { inferNarrativeRole, detectStoryArcs, analyzeNarrativeStructure } from "../narrative-intelligence.js";
+import { findConflicts } from "../multi-agent.js";
 
 const alignmentEngine = new SmartAlignmentEngine({ autoSaveEnabled: true, userTriggerThreshold: 0.7, claudeInsightThreshold: 0.75 });
 
@@ -95,6 +96,48 @@ export function registerAutonomousTools(server: McpServer): void {
 
         const unresolvedProblems = narrativeMems.filter((m: Memory) => { const role = m.narrative_context?.narrative_role; return role === "exposition" || role === "rising_action"; }).slice(0, 2);
         if (unresolvedProblems.length > 0) { sections.push(`\n\u26a0\ufe0f UNRESOLVED (${unresolvedProblems.length}):`); for (const mem of unresolvedProblems) { sections.push(`  \u{1f4d6} ${mem.narrative_context?.narrative_role}: ${mem.content.slice(0, 70)}...`); } }
+      }
+
+      // MULTI-AGENT INTELLIGENCE (v3.0 Phase 3)
+      const multiAgentMems = recentMems.filter((m: Memory) => m.multi_agent_context !== undefined);
+      if (multiAgentMems.length > 0 && depth !== "quick") {
+        const agentCounts: Record<string, number> = {};
+        const consensusCount = { agreed: 0, disputed: 0, pending: 0, resolved: 0 };
+        let totalConflicts = 0;
+
+        for (const mem of multiAgentMems) {
+          const mac = mem.multi_agent_context!;
+          if (mac.created_by) {
+            const agentType = mac.created_by.agent_type;
+            agentCounts[agentType] = (agentCounts[agentType] || 0) + 1;
+          }
+          if (mac.consensus_status) {
+            consensusCount[mac.consensus_status]++;
+          }
+        }
+
+        // Check for conflicts in recent memories
+        const allRecentMems = await listMemories({ limit: 50, project: project || undefined, sortBy: "recent" });
+        for (const mem of multiAgentMems.slice(0, 10)) {
+          const conflicts = findConflicts(mem, allRecentMems);
+          totalConflicts += conflicts.length;
+        }
+
+        const agentTypeEmojis: Record<string, string> = { claude: "\u{1f916}", human: "\u{1f464}", walker: "\u{1f6b6}", custom: "\u2699\ufe0f" };
+        sections.push(`\n\u{1f91d} MULTI-AGENT COLLABORATION (${multiAgentMems.length} memories):`);
+        const topAgents = Object.entries(agentCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
+        if (topAgents.length > 0) {
+          sections.push(`  Agents: ${topAgents.map(([type, count]) => `${agentTypeEmojis[type] || "\u2022"}${type}(${count})`).join(", ")}`);
+        }
+
+        if (consensusCount.disputed > 0 || totalConflicts > 0) {
+          sections.push(`  \u26a0\ufe0f Status: ${consensusCount.agreed} agreed, ${consensusCount.disputed} disputed, ${consensusCount.pending} pending`);
+          if (totalConflicts > 0) {
+            sections.push(`  \u{1f504} ${totalConflicts} potential conflict(s) detected - use 'detect_conflicts' for details`);
+          }
+        } else if (consensusCount.agreed > 0) {
+          sections.push(`  \u2705 Status: ${consensusCount.agreed} agreed, ${consensusCount.pending} pending`);
+        }
       }
 
       if (topic) { const tm = await searchWithContext(topic, { limit, project }); if (tm.length > 0) { sections.push(`\n\u{1f3af} CONTEXT FOR "${topic}" (${tm.length}):\n${tm.map((m) => `  [${m.type}] ${m.content.slice(0, 100)}${m.content.length > 100 ? "..." : ""} (${Math.round(m.score * 100)}%)`).join("\n")}`); } }

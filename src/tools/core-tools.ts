@@ -32,6 +32,8 @@ import { checkDuplicates } from "../dedupe.js";
 import { searchWithContext } from "../search-service.js";
 import { inferEmotionalContext } from "../emotional-intelligence.js";
 import { inferNarrativeRole } from "../narrative-intelligence.js";
+import { findConflicts } from "../multi-agent.js";
+import type { AgentIdentity, MultiAgentContext } from "../types.js";
 
 export function registerCoreTools(server: McpServer): void {
   // Save a memory with auto-detection
@@ -90,6 +92,18 @@ export function registerCoreTools(server: McpServer): void {
       };
       const narrativeContext = inferNarrativeRole(tempMemory);
 
+      // Create multi-agent context (v3.0 Phase 3)
+      const currentAgent: AgentIdentity = {
+        agent_id: config.current_agent_id || "human_user",
+        agent_type: config.current_agent_type || "human",
+        trust_level: 0.8,
+      };
+
+      const multiAgentContext: MultiAgentContext = {
+        created_by: currentAgent,
+        detected_by: "explicit",
+      };
+
       const id = await saveMemory({
         content: cleanedContent,
         type: detectedType,
@@ -102,6 +116,7 @@ export function registerCoreTools(server: McpServer): void {
         source: "human",
         emotional_context: emotionalContext,  // v3.0 Phase 1
         narrative_context: narrativeContext,  // v3.0 Phase 2
+        multi_agent_context: multiAgentContext,  // v3.0 Phase 3
         // Store extracted reasoning in metadata
         metadata: extractedReasoning ? { reasoning: extractedReasoning } : undefined,
       });
@@ -130,6 +145,23 @@ export function registerCoreTools(server: McpServer): void {
       // Add extracted entities if any
       if (extractedEntities.length) {
         outputMessage += `\nExtracted entities: ${extractedEntities.join(", ")}`;
+      }
+
+      // Add multi-agent context info
+      if (multiAgentContext.created_by) {
+        const agentTypeEmoji = { claude: "🤖", human: "👤", walker: "🚶", custom: "⚙️" };
+        outputMessage += `\nCreated by: ${agentTypeEmoji[multiAgentContext.created_by.agent_type]} ${multiAgentContext.created_by.agent_type} agent`;
+      }
+
+      // Check for conflicts with existing memories
+      const savedMemory = await getMemory(id);
+      if (savedMemory) {
+        const allMemories = await listMemories({ limit: 100, project: project || config.current_project });
+        const conflicts = findConflicts(savedMemory, allMemories);
+        if (conflicts.length > 0) {
+          outputMessage += `\n\n⚠️ Detected ${conflicts.length} potential conflict(s) with existing memories.`;
+          outputMessage += `\nUse 'detect_conflicts' tool for details.`;
+        }
       }
 
       return {
