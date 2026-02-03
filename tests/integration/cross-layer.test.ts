@@ -42,18 +42,98 @@ async function createTestMemory(content: string, overrides: Partial<Memory> = {}
     ...overrides,
   });
 
-  // Build the full memory object including contexts
-  // (ChromaDB may not store/return all fields, so we reconstruct)
+  // Retrieve memory - contexts should now be persisted and retrieved from DB
   const retrievedMemory = (await getMemory(id))!;
-  return {
-    ...retrievedMemory,
-    emotional_context,
-    narrative_context,
-    ...overrides, // Apply any override contexts
-  };
+  return retrievedMemory;
 }
 
 describe("Cross-Layer Integration Tests", () => {
+  describe("Intelligence Context Persistence", () => {
+    it("should persist and retrieve emotional context from database", async () => {
+      const content = "I'm thrilled about the successful deployment!";
+      const emotional_context = inferEmotionalContext(content);
+
+      const id = await saveMemory({
+        content,
+        type: "learning",
+        tags: ["test"],
+        importance: 3,
+        project: "test_persistence",
+        session_id: "test_session",
+        timestamp: new Date().toISOString(),
+        emotional_context,
+      });
+
+      // Retrieve from DB - emotional_context should be persisted
+      const retrieved = await getMemory(id);
+
+      expect(retrieved).toBeDefined();
+      expect(retrieved!.emotional_context).toBeDefined();
+      expect(retrieved!.emotional_context!.valence).toBe(emotional_context.valence);
+      expect(retrieved!.emotional_context!.arousal).toBe(emotional_context.arousal);
+      expect(retrieved!.emotional_context!.dominance).toBe(emotional_context.dominance);
+
+      await deleteMemory(id);
+    });
+
+    it("should persist and retrieve all 4 intelligence contexts", async () => {
+      const content = "Team consensus: adopt TypeScript for type safety";
+      const emotional_context = inferEmotionalContext(content);
+      const tempMem: Memory = {
+        id: "temp",
+        content,
+        type: "decision",
+        tags: ["test"],
+        timestamp: new Date().toISOString(),
+        importance: 4,
+        access_count: 0,
+        emotional_context,
+      };
+      const narrative_context = inferNarrativeRole(tempMem);
+      const multi_agent_context = {
+        created_by: { agent_id: "test_agent", agent_type: "human" as const, trust_level: 0.9 },
+        detected_by: "explicit" as const,
+      };
+      const social_context = {
+        endorsements: [],
+        quality_score: 0.8,
+        consensus_level: 0.9,
+        influence_score: 0.5,
+      };
+
+      const id = await saveMemory({
+        content,
+        type: "decision",
+        tags: ["test"],
+        importance: 4,
+        project: "test_persistence",
+        session_id: "test_session",
+        timestamp: new Date().toISOString(),
+        emotional_context,
+        narrative_context,
+        multi_agent_context,
+        social_context,
+      });
+
+      // Retrieve from DB - all contexts should be persisted
+      const retrieved = await getMemory(id);
+
+      expect(retrieved).toBeDefined();
+      expect(retrieved!.emotional_context).toBeDefined();
+      expect(retrieved!.narrative_context).toBeDefined();
+      expect(retrieved!.multi_agent_context).toBeDefined();
+      expect(retrieved!.social_context).toBeDefined();
+
+      // Verify data integrity
+      expect(retrieved!.emotional_context!.valence).toBe(emotional_context.valence);
+      expect(retrieved!.narrative_context!.narrative_role).toBe(narrative_context.narrative_role);
+      expect(retrieved!.multi_agent_context!.created_by.agent_id).toBe("test_agent");
+      expect(retrieved!.social_context!.consensus_level).toBe(0.9);
+
+      await deleteMemory(id);
+    });
+  });
+
   describe("Emotional + Narrative Integration", () => {
     it("should preserve both emotional and narrative contexts", async () => {
       const content = "I discovered a critical bug in the authentication system that was causing user login failures.";

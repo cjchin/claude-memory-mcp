@@ -8,6 +8,12 @@ import {
   type ScoredMemory,
   type HybridSearchConfig,
 } from "./hybrid-search.js";
+import {
+  DatabaseError,
+  ParsingError,
+  NotFoundError,
+  withRetry,
+} from "./errors.js";
 
 const MEMORIES_COLLECTION = "claude_memories";
 const SESSIONS_COLLECTION = "claude_sessions";
@@ -28,34 +34,77 @@ const DB = {
   DEFAULT_SIMILAR_THRESHOLD: 0.85,
 } as const;
 
+/**
+ * Database connection state.
+ *
+ * ARCHITECTURE NOTE: These are module-level singletons. In Node.js single-threaded
+ * execution, lazy initialization is safe. The initPromise prevents race conditions
+ * if multiple async operations call initDb() simultaneously.
+ */
 let client: ChromaClient | null = null;
 let memoriesCollection: Collection | null = null;
 let sessionsCollection: Collection | null = null;
 let projectsCollection: Collection | null = null;
+let initPromise: Promise<void> | null = null;
 
+/**
+ * Initialize database connection. Safe to call multiple times - will only
+ * initialize once. Concurrent calls will wait for the same initialization.
+ */
 export async function initDb(): Promise<void> {
-  if (!client) {
-    client = new ChromaClient({
-      path: `http://${config.chroma_host}:${config.chroma_port}`,
-    });
-
-    memoriesCollection = await client.getOrCreateCollection({
-      name: MEMORIES_COLLECTION,
-      metadata: { description: "Claude session memories and insights" },
-    });
-
-    sessionsCollection = await client.getOrCreateCollection({
-      name: SESSIONS_COLLECTION,
-      metadata: { description: "Session tracking" },
-    });
-
-    projectsCollection = await client.getOrCreateCollection({
-      name: PROJECTS_COLLECTION,
-      metadata: { description: "Project contexts" },
-    });
-
-    console.error(`Connected to ChromaDB at ${config.chroma_host}:${config.chroma_port}`);
+  // Already initialized
+  if (client && memoriesCollection && sessionsCollection && projectsCollection) {
+    return;
   }
+
+  // Initialization in progress - wait for it
+  if (initPromise) {
+    return initPromise;
+  }
+
+  // Start initialization
+  initPromise = (async () => {
+    try {
+      client = new ChromaClient({
+        path: `http://${config.chroma_host}:${config.chroma_port}`,
+      });
+
+      memoriesCollection = await client.getOrCreateCollection({
+        name: MEMORIES_COLLECTION,
+        metadata: { description: "Claude session memories and insights" },
+      });
+
+      sessionsCollection = await client.getOrCreateCollection({
+        name: SESSIONS_COLLECTION,
+        metadata: { description: "Session tracking" },
+      });
+
+      projectsCollection = await client.getOrCreateCollection({
+        name: PROJECTS_COLLECTION,
+        metadata: { description: "Project contexts" },
+      });
+
+      console.error(`Connected to ChromaDB at ${config.chroma_host}:${config.chroma_port}`);
+    } catch (error) {
+      // Reset state on failure so retry is possible
+      client = null;
+      memoriesCollection = null;
+      sessionsCollection = null;
+      projectsCollection = null;
+      initPromise = null;
+
+      const isConnectionError = error instanceof Error &&
+        (error.message.includes("ECONNREFUSED") || error.message.includes("fetch"));
+
+      throw new DatabaseError(
+        `Failed to initialize ChromaDB at ${config.chroma_host}:${config.chroma_port}: ${error}`,
+        isConnectionError
+      );
+    }
+  })();
+
+  await initPromise;
+  initPromise = null;
 }
 
 function generateId(prefix: string): string {
@@ -104,8 +153,13 @@ function parseMemoryFromChroma(
   if (metadata.links_json) {
     try {
       memory.links = JSON.parse(metadata.links_json as string);
-    } catch {
-      // Ignore malformed links_json
+    } catch (e) {
+      const error = new ParsingError(
+        `Failed to parse links_json for memory ${id}`,
+        "links_json",
+        metadata.links_json
+      );
+      console.error(error.message, "Raw value:", String(metadata.links_json).slice(0, 100));
     }
   }
 
@@ -113,8 +167,66 @@ function parseMemoryFromChroma(
   if (metadata.metadata_json) {
     try {
       memory.metadata = JSON.parse(metadata.metadata_json as string);
-    } catch {
-      // Ignore malformed metadata_json
+    } catch (e) {
+      const error = new ParsingError(
+        `Failed to parse metadata_json for memory ${id}`,
+        "metadata_json",
+        metadata.metadata_json
+      );
+      console.error(error.message, "Raw value:", String(metadata.metadata_json).slice(0, 100));
+    }
+  }
+
+  // Parse intelligence contexts (v3.0)
+  if (metadata.emotional_context_json) {
+    try {
+      memory.emotional_context = JSON.parse(metadata.emotional_context_json as string);
+    } catch (e) {
+      const error = new ParsingError(
+        `Failed to parse emotional_context_json for memory ${id}`,
+        "emotional_context_json",
+        metadata.emotional_context_json
+      );
+      console.error(error.message, "Raw value:", String(metadata.emotional_context_json).slice(0, 100));
+    }
+  }
+
+  if (metadata.narrative_context_json) {
+    try {
+      memory.narrative_context = JSON.parse(metadata.narrative_context_json as string);
+    } catch (e) {
+      const error = new ParsingError(
+        `Failed to parse narrative_context_json for memory ${id}`,
+        "narrative_context_json",
+        metadata.narrative_context_json
+      );
+      console.error(error.message, "Raw value:", String(metadata.narrative_context_json).slice(0, 100));
+    }
+  }
+
+  if (metadata.multi_agent_context_json) {
+    try {
+      memory.multi_agent_context = JSON.parse(metadata.multi_agent_context_json as string);
+    } catch (e) {
+      const error = new ParsingError(
+        `Failed to parse multi_agent_context_json for memory ${id}`,
+        "multi_agent_context_json",
+        metadata.multi_agent_context_json
+      );
+      console.error(error.message, "Raw value:", String(metadata.multi_agent_context_json).slice(0, 100));
+    }
+  }
+
+  if (metadata.social_context_json) {
+    try {
+      memory.social_context = JSON.parse(metadata.social_context_json as string);
+    } catch (e) {
+      const error = new ParsingError(
+        `Failed to parse social_context_json for memory ${id}`,
+        "social_context_json",
+        metadata.social_context_json
+      );
+      console.error(error.message, "Raw value:", String(metadata.social_context_json).slice(0, 100));
     }
   }
 
@@ -167,6 +279,11 @@ export async function saveMemory(
         superseded_by: memory.superseded_by || "",
         confidence: memory.confidence ?? 1,
         source: memory.source || "human",
+        // Intelligence contexts (v3.0) - serialized as JSON
+        emotional_context_json: memory.emotional_context ? JSON.stringify(memory.emotional_context) : "",
+        narrative_context_json: memory.narrative_context ? JSON.stringify(memory.narrative_context) : "",
+        multi_agent_context_json: memory.multi_agent_context ? JSON.stringify(memory.multi_agent_context) : "",
+        social_context_json: memory.social_context ? JSON.stringify(memory.social_context) : "",
       },
     ],
   });
@@ -461,7 +578,9 @@ export async function updateMemory(
   if (!memoriesCollection) await initDb();
 
   const existing = await getMemory(id);
-  if (!existing) throw new Error(`Memory ${id} not found`);
+  if (!existing) {
+    throw new NotFoundError(`Memory not found`, "memory", id);
+  }
 
   const newContent = updates.content || existing.content;
   const embedding = updates.content ? await embed(newContent) : undefined;
@@ -494,6 +613,19 @@ export async function updateMemory(
         superseded_by: updates.superseded_by || existing.superseded_by || "",
         confidence: updates.confidence ?? existing.confidence ?? 1,
         source: updates.source || existing.source || "human",
+        // Intelligence contexts (v3.0)
+        emotional_context_json: updates.emotional_context
+          ? JSON.stringify(updates.emotional_context)
+          : (existing.emotional_context ? JSON.stringify(existing.emotional_context) : ""),
+        narrative_context_json: updates.narrative_context
+          ? JSON.stringify(updates.narrative_context)
+          : (existing.narrative_context ? JSON.stringify(existing.narrative_context) : ""),
+        multi_agent_context_json: updates.multi_agent_context
+          ? JSON.stringify(updates.multi_agent_context)
+          : (existing.multi_agent_context ? JSON.stringify(existing.multi_agent_context) : ""),
+        social_context_json: updates.social_context
+          ? JSON.stringify(updates.social_context)
+          : (existing.social_context ? JSON.stringify(existing.social_context) : ""),
       },
     ],
   });
@@ -721,13 +853,40 @@ export async function getMemoryStats(): Promise<{
 
 // ============ SESSION OPERATIONS ============
 
+/**
+ * Current session state.
+ *
+ * ARCHITECTURE NOTE: MCP servers are single-instance per Claude session.
+ * Each server process handles exactly one Claude conversation, so global
+ * session state is acceptable and thread-safe in Node.js's single-threaded
+ * event loop.
+ *
+ * For testing or advanced use cases, session ID can be overridden via
+ * setSessionId() or startSession().
+ */
 let currentSessionId: string | null = null;
 
+/**
+ * Get the current session ID, lazily initializing if needed.
+ * Synchronous and safe in Node.js single-threaded context.
+ */
 export function getCurrentSessionId(): string {
   if (!currentSessionId) {
     currentSessionId = generateId("sess");
+    console.error(`Auto-initialized session: ${currentSessionId}`);
   }
   return currentSessionId;
+}
+
+/**
+ * Set session ID explicitly (for testing or external session management).
+ * Use this to override the default lazy initialization.
+ */
+export function setSessionId(sessionId: string): void {
+  if (currentSessionId && currentSessionId !== sessionId) {
+    console.error(`Warning: Changing session ID from ${currentSessionId} to ${sessionId}`);
+  }
+  currentSessionId = sessionId;
 }
 
 export async function startSession(project?: string): Promise<string> {
