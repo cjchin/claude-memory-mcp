@@ -26,6 +26,7 @@ import { recordToolActivity } from "./shadow-tools.js";
 import { checkDuplicates } from "../dedupe.js";
 import { searchWithContext } from "../search-service.js";
 import { filterByEmotion, detectEmotionalShift, inferEmotionalContext } from "../emotional-intelligence.js";
+import { inferNarrativeRole, detectStoryArcs, analyzeNarrativeStructure } from "../narrative-intelligence.js";
 
 const alignmentEngine = new SmartAlignmentEngine({ autoSaveEnabled: true, userTriggerThreshold: 0.7, claudeInsightThreshold: 0.75 });
 
@@ -78,6 +79,24 @@ export function registerAutonomousTools(server: McpServer): void {
         if (shifts.length > 0) { sections.push(`\n\u{1f504} EMOTIONAL SHIFTS (${shifts.length}):`); for (const { shift, newMemory } of shifts.slice(0, 2)) { sections.push(`  ${shift.from} \u2192 ${shift.to} (\u0394${shift.magnitude.toFixed(1)}): ${newMemory.content.slice(0, 60)}...`); } }
       }
 
+      // NARRATIVE INTELLIGENCE (v3.0 Phase 2)
+      const narrativeMems = recentMems.filter((m: Memory) => m.narrative_context !== undefined);
+      if (narrativeMems.length > 0 && depth !== "quick") {
+        const narrativeStats = analyzeNarrativeStructure(narrativeMems);
+        const arcs = detectStoryArcs(narrativeMems.slice(0, 50));
+
+        if (arcs.length > 0) { sections.push(`\n\u{1f4da} STORY ARCS (${arcs.length}):`); for (const arc of arcs.slice(0, 2)) { sections.push(`  \u2022 "${arc.theme}": ${arc.memories.length} memories (${new Date(arc.startTime).toISOString().split('T')[0]} \u2192 ${new Date(arc.endTime).toISOString().split('T')[0]})`); } }
+
+        const roleEmojis: Record<string, string> = { exposition: "\u{1f4d6}", rising_action: "\u{1f4c8}", climax: "\u26a1", falling_action: "\u{1f4c9}", resolution: "\u2705" };
+        const topRoles = Object.entries(narrativeStats.role_distribution).filter(([_, count]) => count > 0).sort((a, b) => b[1] - a[1]).slice(0, 3);
+        if (topRoles.length > 0) { sections.push(`\n\u{1f3ad} NARRATIVE PROGRESSION: ${topRoles.map(([role, count]) => `${roleEmojis[role] || "\u2022"}${role}(${count})`).join(", ")}`); }
+
+        if (narrativeStats.turning_points > 0) { sections.push(`\u{1f504} Turning points: ${narrativeStats.turning_points}`); }
+
+        const unresolvedProblems = narrativeMems.filter((m: Memory) => { const role = m.narrative_context?.narrative_role; return role === "exposition" || role === "rising_action"; }).slice(0, 2);
+        if (unresolvedProblems.length > 0) { sections.push(`\n\u26a0\ufe0f UNRESOLVED (${unresolvedProblems.length}):`); for (const mem of unresolvedProblems) { sections.push(`  \u{1f4d6} ${mem.narrative_context?.narrative_role}: ${mem.content.slice(0, 70)}...`); } }
+      }
+
       if (topic) { const tm = await searchWithContext(topic, { limit, project }); if (tm.length > 0) { sections.push(`\n\u{1f3af} CONTEXT FOR "${topic}" (${tm.length}):\n${tm.map((m) => `  [${m.type}] ${m.content.slice(0, 100)}${m.content.length > 100 ? "..." : ""} (${Math.round(m.score * 100)}%)`).join("\n")}`); } }
       const lrn = await listMemories({ limit: Math.max(2, limit - 3), project: project || undefined, type: "learning", sortBy: "recent" });
       if (lrn.length > 0) { sections.push(`\n\u{1f4da} RECENT LEARNINGS (${lrn.length}):\n${lrn.map((l) => `  \u{1f4a1} ${l.content.slice(0, 100)}${l.content.length > 100 ? "..." : ""}`).join("\n")}`); }
@@ -90,15 +109,15 @@ export function registerAutonomousTools(server: McpServer): void {
     async ({ summary, insights, next_steps, auto_save }) => {
       const results: string[] = []; const sessionId = getCurrentSessionId();
       results.push(`\u2554${"\u2550".repeat(62)}\u2557\n\u2551                    CHECKPOINT SAVED                         \u2551\n\u255a${"\u2550".repeat(62)}\u255d\n`);
-      if (auto_save && summary) { const sid = await saveMemory({ content: `Session checkpoint: ${summary}`, type: "context", tags: ["checkpoint", "session-progress"], importance: 3, project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString(), emotional_context: inferEmotionalContext(summary) }); await addMemoryToSession(sid); results.push(`\u{1f4cd} Checkpoint: ${summary}`); results.push(`   Saved as: ${sid}\n`); }
+      if (auto_save && summary) { const tempMem: Memory = { id: "temp", content: `Session checkpoint: ${summary}`, type: "context", tags: ["checkpoint", "session-progress"], timestamp: new Date().toISOString(), importance: 3, access_count: 0, emotional_context: inferEmotionalContext(summary) }; const sid = await saveMemory({ content: `Session checkpoint: ${summary}`, type: "context", tags: ["checkpoint", "session-progress"], importance: 3, project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString(), emotional_context: inferEmotionalContext(summary), narrative_context: inferNarrativeRole(tempMem) }); await addMemoryToSession(sid); results.push(`\u{1f4cd} Checkpoint: ${summary}`); results.push(`   Saved as: ${sid}\n`); }
       if (auto_save && insights?.length) {
         results.push(`\u{1f4a1} Insights saved:`);
-        for (const insight of insights) { const sim = await checkDuplicates(insight, "STANDARD"); if (sim.length > 0) { results.push(`   [SKIP] Already exists: "${insight.slice(0, 40)}..."`); continue; } const id = await saveMemory({ content: insight, type: "learning", tags: detectTags(insight), importance: estimateImportance(insight), project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString(), emotional_context: inferEmotionalContext(insight) }); await addMemoryToSession(id); results.push(`   \u2022 ${insight.slice(0, 50)}... \u2192 ${id}`); }
+        for (const insight of insights) { const sim = await checkDuplicates(insight, "STANDARD"); if (sim.length > 0) { results.push(`   [SKIP] Already exists: "${insight.slice(0, 40)}..."`); continue; } const ec = inferEmotionalContext(insight); const tempMem: Memory = { id: "temp", content: insight, type: "learning", tags: detectTags(insight), timestamp: new Date().toISOString(), importance: estimateImportance(insight), access_count: 0, emotional_context: ec }; const id = await saveMemory({ content: insight, type: "learning", tags: detectTags(insight), importance: estimateImportance(insight), project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString(), emotional_context: ec, narrative_context: inferNarrativeRole(tempMem) }); await addMemoryToSession(id); results.push(`   \u2022 ${insight.slice(0, 50)}... \u2192 ${id}`); }
         results.push("");
       }
       if (auto_save && next_steps?.length) {
         results.push(`\u{1f4cb} TODOs added:`);
-        for (const step of next_steps) { const sim = await checkDuplicates(step, "STANDARD"); if (sim.length > 0) { results.push(`   [SKIP] Already exists: "${step.slice(0, 40)}..."`); continue; } const id = await saveMemory({ content: step, type: "todo", tags: detectTags(step), importance: 4, project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString(), emotional_context: inferEmotionalContext(step) }); await addMemoryToSession(id); results.push(`   \u25a1 ${step.slice(0, 50)}... \u2192 ${id}`); }
+        for (const step of next_steps) { const sim = await checkDuplicates(step, "STANDARD"); if (sim.length > 0) { results.push(`   [SKIP] Already exists: "${step.slice(0, 40)}..."`); continue; } const ec = inferEmotionalContext(step); const tempMem: Memory = { id: "temp", content: step, type: "todo", tags: detectTags(step), timestamp: new Date().toISOString(), importance: 4, access_count: 0, emotional_context: ec }; const id = await saveMemory({ content: step, type: "todo", tags: detectTags(step), importance: 4, project: config.current_project, session_id: sessionId, timestamp: new Date().toISOString(), emotional_context: ec, narrative_context: inferNarrativeRole(tempMem) }); await addMemoryToSession(id); results.push(`   \u25a1 ${step.slice(0, 50)}... \u2192 ${id}`); }
         results.push("");
       }
       // Surface session shadows for Claude's reflection
@@ -131,7 +150,7 @@ export function registerAutonomousTools(server: McpServer): void {
       if (points.length === 0) { return { content: [{ type: "text" as const, text: "No memorable points detected in the provided content." }] }; }
       const results: string[] = [];
       for (const point of points) {
-        if (auto_save) { const sim = await checkDuplicates(point.content, "STANDARD"); if (sim.length > 0) { results.push(`[SKIP] Already exists: "${point.content.slice(0, 50)}..."`); continue; } const id = await saveMemory({ content: point.content, type: point.type, tags: point.tags, importance: point.importance, project: config.current_project, session_id: getCurrentSessionId(), timestamp: new Date().toISOString(), emotional_context: inferEmotionalContext(point.content) }); await addMemoryToSession(id); results.push(`[SAVED] ${point.type.toUpperCase()}: "${point.content.slice(0, 50)}..." \u2192 ${id}`);
+        if (auto_save) { const sim = await checkDuplicates(point.content, "STANDARD"); if (sim.length > 0) { results.push(`[SKIP] Already exists: "${point.content.slice(0, 50)}..."`); continue; } const ec = inferEmotionalContext(point.content); const tempMem: Memory = { id: "temp", content: point.content, type: point.type, tags: point.tags, timestamp: new Date().toISOString(), importance: point.importance, access_count: 0, emotional_context: ec }; const id = await saveMemory({ content: point.content, type: point.type, tags: point.tags, importance: point.importance, project: config.current_project, session_id: getCurrentSessionId(), timestamp: new Date().toISOString(), emotional_context: ec, narrative_context: inferNarrativeRole(tempMem) }); await addMemoryToSession(id); results.push(`[SAVED] ${point.type.toUpperCase()}: "${point.content.slice(0, 50)}..." \u2192 ${id}`);
         } else { results.push(`[DETECTED] ${point.type.toUpperCase()} (imp: ${point.importance}): "${point.content.slice(0, 80)}..."`); }
       }
       return { content: [{ type: "text" as const, text: `Synthesis Complete\n==================\n\nExtracted ${points.length} memorable points:\n\n` + results.join("\n") }] };

@@ -26,11 +26,12 @@ import {
 import { config } from "../config.js";
 import { detectMemoryType, detectTags, estimateImportance } from "../intelligence.js";
 import { cleanText, extractEntities, extractReasoning } from "../preprocess.js";
-import type { MemoryType } from "../types.js";
+import type { MemoryType, Memory } from "../types.js";
 import { recordToolActivity } from "./shadow-tools.js";
 import { checkDuplicates } from "../dedupe.js";
 import { searchWithContext } from "../search-service.js";
 import { inferEmotionalContext } from "../emotional-intelligence.js";
+import { inferNarrativeRole } from "../narrative-intelligence.js";
 
 export function registerCoreTools(server: McpServer): void {
   // Save a memory with auto-detection
@@ -76,6 +77,19 @@ export function registerCoreTools(server: McpServer): void {
       // Infer emotional context (v3.0 Phase 1)
       const emotionalContext = inferEmotionalContext(content);
 
+      // Infer narrative context (v3.0 Phase 2)
+      const tempMemory: Memory = {
+        id: "temp",
+        content: cleanedContent,
+        type: detectedType,
+        tags: mergedTags,
+        timestamp: new Date().toISOString(),
+        importance: detectedImportance,
+        access_count: 0,
+        emotional_context: emotionalContext
+      };
+      const narrativeContext = inferNarrativeRole(tempMemory);
+
       const id = await saveMemory({
         content: cleanedContent,
         type: detectedType,
@@ -87,6 +101,7 @@ export function registerCoreTools(server: McpServer): void {
         valid_from: new Date().toISOString(),
         source: "human",
         emotional_context: emotionalContext,  // v3.0 Phase 1
+        narrative_context: narrativeContext,  // v3.0 Phase 2
         // Store extracted reasoning in metadata
         metadata: extractedReasoning ? { reasoning: extractedReasoning } : undefined,
       });
@@ -102,6 +117,14 @@ export function registerCoreTools(server: McpServer): void {
       // Add emotional context info
       if (emotionalContext.dominant_emotion) {
         outputMessage += `\nEmotion: ${emotionalContext.dominant_emotion} (valence: ${emotionalContext.valence.toFixed(2)}, arousal: ${emotionalContext.arousal.toFixed(2)})`;
+      }
+
+      // Add narrative context info
+      if (narrativeContext.narrative_role) {
+        outputMessage += `\nNarrative role: ${narrativeContext.narrative_role}`;
+        if (narrativeContext.turning_point) {
+          outputMessage += ` (turning point)`;
+        }
       }
 
       // Add extracted entities if any
