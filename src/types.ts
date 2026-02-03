@@ -79,6 +79,9 @@ export interface Memory {
 
   // Emotional Intelligence (v3.0 Phase 1)
   emotional_context?: EmotionalContext;    // Optional emotional metadata
+
+  // Narrative Intelligence (v3.0 Phase 2)
+  narrative_context?: NarrativeContext;    // Optional narrative metadata
 }
 
 export interface Session {
@@ -240,6 +243,54 @@ export interface EmotionalDecayConfig {
   negative_decay_rate: number;       // How fast negative valence fades (default: 0.08/day)
   arousal_protection: number;        // High arousal slows decay (default: 0.5)
   flashbulb_threshold: number;       // Arousal level for flashbulb effect (default: 0.8)
+}
+
+// ============================================================================
+// Narrative Intelligence Types - Phase 2 of v3.0 Evolution
+// ============================================================================
+
+/**
+ * Narrative role in story structure (Freytag's Pyramid)
+ */
+export type NarrativeRole =
+  | "exposition"       // Background, context, setup
+  | "rising_action"    // Complications, challenges building
+  | "climax"           // Peak tension, critical decision/turning point
+  | "falling_action"   // Consequences unfolding
+  | "resolution";      // Outcome, closure, lessons learned
+
+/**
+ * Narrative context for a memory (story structure)
+ *
+ * Enables detection of story arcs and causal chains across memories.
+ * Based on Freytag's Pyramid (dramatic structure) and narrative identity theory.
+ *
+ * Examples:
+ * - Bug discovery: exposition (context) → rising_action (investigation) → climax (root cause found) → resolution (fix applied)
+ * - Feature development: exposition (requirements) → rising_action (implementation) → climax (integration challenge) → falling_action (resolution) → resolution (deployed)
+ */
+export interface NarrativeContext {
+  // Story structure (Freytag's Pyramid)
+  narrative_role?: NarrativeRole;      // Where in the story arc this memory fits
+
+  // Story arc tracking
+  story_arc_id?: string;               // ID linking memories in the same story arc
+
+  // Causal relationships
+  caused_by_memory?: string;           // Memory ID that caused this event
+  leads_to_memory?: string;            // Memory ID that resulted from this event
+
+  // Significance markers
+  turning_point?: boolean;             // Is this a critical decision/realization?
+  resolution_of?: string;              // Memory ID of problem/question this resolves
+
+  // Thematic elements
+  themes?: string[];                   // Extracted themes (e.g., "authentication", "performance")
+  characters?: string[];               // Key actors/agents involved
+
+  // Confidence and source
+  narrative_confidence?: number;       // 0-1, how confident the inference is
+  detected_by?: "explicit" | "inferred" | "llm_assisted"; // Origin of narrative data
 }
 
 // ============================================================================
