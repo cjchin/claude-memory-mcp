@@ -95,52 +95,5 @@ export function errorResponse(context: string, error: unknown): ToolResponse {
   };
 }
 
-/**
- * Retry a function with exponential backoff
- *
- * Useful for transient failures (network issues, database locks, etc.)
- *
- * @param fn - Function to retry
- * @param maxRetries - Maximum number of retry attempts (default: 3)
- * @param baseDelay - Base delay in ms (default: 100)
- * @returns Result of successful function call
- * @throws Last error if all retries fail
- *
- * @example
- * ```typescript
- * const result = await withRetry(
- *   async () => await chromaClient.query(...),
- *   3,
- *   100
- * );
- * ```
- */
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries: number = 3,
-  baseDelay: number = 100
-): Promise<T> {
-  let lastError: Error | unknown;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error;
-
-      // Don't retry on last attempt
-      if (attempt === maxRetries) {
-        break;
-      }
-
-      // Exponential backoff: 100ms, 200ms, 400ms, etc.
-      const delay = baseDelay * Math.pow(2, attempt);
-      console.warn(`Attempt ${attempt + 1} failed, retrying in ${delay}ms...`, error);
-
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-
-  // All retries failed
-  throw lastError;
-}
+// Re-export withRetry from the canonical location
+export { withRetry } from "../errors.js";

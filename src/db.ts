@@ -251,7 +251,7 @@ export async function saveMemory(
   const now = new Date().toISOString();
   const { bidirectionalLink = true } = options;
 
-  await memoriesCollection!.add({
+  await withRetry(() => memoriesCollection!.add({
     ids: [id],
     embeddings: [embedding],
     documents: [memory.content],
@@ -286,7 +286,7 @@ export async function saveMemory(
         social_context_json: memory.social_context ? JSON.stringify(memory.social_context) : "",
       },
     ],
-  });
+  }));
 
   // Bidirectional linking (from A-MEM): update related memories to link back
   if (bidirectionalLink && memory.related_memories?.length) {
@@ -417,12 +417,12 @@ export async function searchMemories(
       ? { $and: whereConditions }
       : whereConditions[0] || undefined;
 
-  const results = await memoriesCollection!.query({
+  const results = await withRetry(() => memoriesCollection!.query({
     queryEmbeddings: [queryEmbedding],
     nResults: limit * DB.SEARCH_FETCH_MULTIPLIER, // Fetch extra to filter
     where: whereClause,
     include: [IncludeEnum.Documents, IncludeEnum.Metadatas, IncludeEnum.Distances],
-  });
+  }));
 
   if (!results.ids[0]?.length) return [];
 
@@ -539,10 +539,10 @@ async function getAllMemoriesForGraph(project?: string): Promise<Memory[]> {
 export async function getMemory(id: string): Promise<Memory | null> {
   if (!memoriesCollection) await initDb();
 
-  const results = await memoriesCollection!.get({
+  const results = await withRetry(() => memoriesCollection!.get({
     ids: [id],
     include: [IncludeEnum.Documents, IncludeEnum.Metadatas],
-  });
+  }));
 
   if (!results.ids.length) return null;
 
@@ -552,7 +552,7 @@ export async function getMemory(id: string): Promise<Memory | null> {
   const newAccessCount = ((metadata.access_count as number) || 0) + 1;
   const newLastAccessed = new Date().toISOString();
 
-  await memoriesCollection!.update({
+  await withRetry(() => memoriesCollection!.update({
     ids: [id],
     metadatas: [
       {
@@ -561,7 +561,7 @@ export async function getMemory(id: string): Promise<Memory | null> {
         last_accessed: newLastAccessed,
       },
     ],
-  });
+  }));
 
   return parseMemoryFromChroma(
     id,
@@ -585,7 +585,7 @@ export async function updateMemory(
   const newContent = updates.content || existing.content;
   const embedding = updates.content ? await embed(newContent) : undefined;
 
-  await memoriesCollection!.update({
+  await withRetry(() => memoriesCollection!.update({
     ids: [id],
     embeddings: embedding ? [embedding] : undefined,
     documents: updates.content ? [newContent] : undefined,
@@ -628,7 +628,7 @@ export async function updateMemory(
           : (existing.social_context ? JSON.stringify(existing.social_context) : ""),
       },
     ],
-  });
+  }));
 }
 
 /**
@@ -658,7 +658,7 @@ export async function supersedeMemory(oldId: string, newId: string): Promise<voi
 
 export async function deleteMemory(id: string): Promise<void> {
   if (!memoriesCollection) await initDb();
-  await memoriesCollection!.delete({ ids: [id] });
+  await withRetry(() => memoriesCollection!.delete({ ids: [id] }));
 }
 
 export async function listMemories(options: {
@@ -680,11 +680,11 @@ export async function listMemories(options: {
       ? { $and: whereConditions }
       : whereConditions[0] || undefined;
 
-  const results = await memoriesCollection!.get({
+  const results = await withRetry(() => memoriesCollection!.get({
     limit,
     where: whereClause,
     include: [IncludeEnum.Documents, IncludeEnum.Metadatas],
-  });
+  }));
 
   if (!results.ids.length) return [];
 
@@ -824,9 +824,9 @@ export async function getMemoryStats(): Promise<{
 }> {
   if (!memoriesCollection) await initDb();
 
-  const allMemories = await memoriesCollection!.get({
+  const allMemories = await withRetry(() => memoriesCollection!.get({
     include: [IncludeEnum.Metadatas],
-  });
+  }));
 
   const stats = {
     total: allMemories.ids.length,

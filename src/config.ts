@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { z } from "zod";
 
 export interface LLMConfig {
   provider: "ollama" | "openai" | "anthropic" | "openrouter" | "lmstudio" | "custom";
@@ -57,6 +58,51 @@ export interface Config {
   current_agent_type?: "claude" | "human" | "walker" | "custom";
 }
 
+/**
+ * Zod schema for config validation.
+ * Validates user-provided config values and coerces types where safe.
+ */
+const LLMConfigSchema = z.object({
+  provider: z.enum(["ollama", "openai", "anthropic", "openrouter", "lmstudio", "custom"]),
+  baseUrl: z.string().optional(),
+  apiKey: z.string().optional(),
+  model: z.string().optional(),
+  maxTokens: z.number().int().positive().optional(),
+  temperature: z.number().min(0).max(2).optional(),
+});
+
+const ConfigSchema = z.object({
+  chroma_host: z.string().min(1),
+  chroma_port: z.number().int().min(1).max(65535),
+  embedding_model: z.string().min(1),
+  default_importance: z.number().int().min(1).max(5),
+  max_context_memories: z.number().int().positive(),
+  context_relevance_threshold: z.number().min(0).max(1),
+  auto_summarize_sessions: z.boolean(),
+  session_summary_min_memories: z.number().int().nonnegative(),
+  enable_memory_decay: z.boolean(),
+  decay_half_life_days: z.number().positive(),
+  llm: LLMConfigSchema.optional(),
+  dream_use_llm: z.boolean(),
+  shadow_enabled: z.boolean(),
+  shadow_token_threshold: z.number().int().positive(),
+  shadow_time_threshold_min: z.number().positive(),
+  shadow_idle_timeout_min: z.number().positive(),
+  shadow_decay_hours: z.number().positive(),
+  shadow_max_entries: z.number().int().positive(),
+  shadow_deduplicate: z.boolean(),
+  shadow_surface_in_prime: z.boolean(),
+  shadow_surface_in_conclude: z.boolean(),
+  shadow_surface_threshold: z.number().min(0).max(1),
+  current_project: z.string().optional(),
+  projects: z.record(z.object({
+    description: z.string().optional(),
+    tech_stack: z.array(z.string()).optional(),
+  })),
+  current_agent_id: z.string().optional(),
+  current_agent_type: z.enum(["claude", "human", "walker", "custom"]).optional(),
+}).passthrough();
+
 const DEFAULT_CONFIG: Config = {
   chroma_host: "localhost",
   chroma_port: 8000,
@@ -93,7 +139,26 @@ export function loadConfig(): Config {
   try {
     if (existsSync(CONFIG_PATH)) {
       const content = readFileSync(CONFIG_PATH, "utf-8");
-      return { ...DEFAULT_CONFIG, ...JSON.parse(content) };
+      const merged = { ...DEFAULT_CONFIG, ...JSON.parse(content) };
+      const result = ConfigSchema.safeParse(merged);
+      if (!result.success) {
+        const issues = result.error.issues
+          .map((i) => `  ${i.path.join(".")}: ${i.message}`)
+          .join("\n");
+        console.error(`Config validation warnings (using defaults for invalid fields):\n${issues}`);
+        // Fall back to defaults for invalid fields by re-merging only valid values
+        const validPartial: Record<string, any> = {};
+        const raw = JSON.parse(content);
+        for (const key of Object.keys(raw)) {
+          const testObj = { ...DEFAULT_CONFIG, [key]: raw[key] };
+          const fieldResult = ConfigSchema.safeParse(testObj);
+          if (fieldResult.success) {
+            validPartial[key] = raw[key];
+          }
+        }
+        return { ...DEFAULT_CONFIG, ...validPartial };
+      }
+      return result.data as Config;
     }
   } catch (error) {
     console.error("Error loading config, using defaults:", error);

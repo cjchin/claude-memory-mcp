@@ -141,80 +141,63 @@ describe("Error Handling Utilities", () => {
     it("should return result on first success", async () => {
       const fn = vi.fn().mockResolvedValue("success");
 
-      const result = await withRetry(fn, 3, 100);
+      const result = await withRetry(fn, { maxRetries: 3, initialDelayMs: 100 });
 
       expect(result).toBe("success");
       expect(fn).toHaveBeenCalledTimes(1);
     });
 
-    it("should retry on failure", async () => {
+    it("should retry on transient failure", async () => {
       const fn = vi
         .fn()
-        .mockRejectedValueOnce(new Error("Fail 1"))
-        .mockRejectedValueOnce(new Error("Fail 2"))
+        .mockRejectedValueOnce(new Error("connection refused"))
+        .mockRejectedValueOnce(new Error("timeout"))
         .mockResolvedValue("success");
 
-      const result = await withRetry(fn, 3, 10);
+      const result = await withRetry(fn, { maxRetries: 3, initialDelayMs: 10 });
 
       expect(result).toBe("success");
       expect(fn).toHaveBeenCalledTimes(3);
     });
 
     it("should throw after max retries", async () => {
-      const fn = vi.fn().mockRejectedValue(new Error("Always fails"));
+      const fn = vi.fn().mockRejectedValue(new Error("timeout"));
 
-      await expect(withRetry(fn, 3, 10)).rejects.toThrow("Always fails");
+      await expect(
+        withRetry(fn, { maxRetries: 3, initialDelayMs: 10 })
+      ).rejects.toThrow("timeout");
 
       expect(fn).toHaveBeenCalledTimes(4); // Initial + 3 retries
     });
 
-    it("should use exponential backoff", async () => {
-      vi.useFakeTimers();
+    it("should not retry non-transient errors by default", async () => {
+      const fn = vi.fn().mockRejectedValue(new Error("validation failed"));
 
-      const fn = vi
-        .fn()
-        .mockRejectedValueOnce(new Error("Fail 1"))
-        .mockRejectedValueOnce(new Error("Fail 2"))
-        .mockResolvedValue("success");
+      await expect(
+        withRetry(fn, { maxRetries: 3, initialDelayMs: 10 })
+      ).rejects.toThrow("validation failed");
 
-      const promise = withRetry(fn, 3, 100);
-
-      // First attempt fails immediately
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fn).toHaveBeenCalledTimes(1);
-
-      // Wait for first retry (100ms)
-      await vi.advanceTimersByTimeAsync(100);
-      expect(fn).toHaveBeenCalledTimes(2);
-
-      // Wait for second retry (200ms)
-      await vi.advanceTimersByTimeAsync(200);
-      expect(fn).toHaveBeenCalledTimes(3);
-
-      const result = await promise;
-      expect(result).toBe("success");
-
-      vi.useRealTimers();
+      expect(fn).toHaveBeenCalledTimes(1); // No retry for non-transient
     });
 
     it("should log retry attempts", async () => {
-      const consoleWarnSpy = vi
-        .spyOn(console, "warn")
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
         .mockImplementation(() => {});
 
       const fn = vi
         .fn()
-        .mockRejectedValueOnce(new Error("Retry me"))
+        .mockRejectedValueOnce(new Error("connection refused"))
         .mockResolvedValue("success");
 
-      await withRetry(fn, 2, 10);
+      await withRetry(fn, { maxRetries: 2, initialDelayMs: 10 });
 
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("Attempt 1 failed"),
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Attempt 1/"),
         expect.any(Error)
       );
 
-      consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
     });
 
     it("should work with default parameters", async () => {
