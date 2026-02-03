@@ -114,7 +114,7 @@ describe("Server Startup Contracts", () => {
     it("should have reasonable number of tools", () => {
       // Sanity check - catch accidental mass duplication
       expect(toolRegistrations.length).toBeGreaterThan(10);
-      expect(toolRegistrations.length).toBeLessThan(80);  // Increased for v3.0 Phase 1+2+3 (emotional + narrative + multi-agent)
+      expect(toolRegistrations.length).toBeLessThan(90);  // Increased for v3.0 Phase 1+2+3+4 (emotional + narrative + multi-agent + social)
     });
   });
 
@@ -183,6 +183,7 @@ describe("Server Startup Contracts", () => {
         "emotional-tools.ts",      // v3.0 Phase 1
         "narrative-tools.ts",      // v3.0 Phase 2
         "multi-agent-tools.ts",    // v3.0 Phase 3
+        "social-tools.ts",         // v3.0 Phase 4
         "index.ts",
       ];
 
@@ -215,6 +216,7 @@ describe("Server Startup Contracts", () => {
         "registerEmotionalTools",      // v3.0 Phase 1
         "registerNarrativeTools",      // v3.0 Phase 2
         "registerMultiAgentTools",     // v3.0 Phase 3
+        "registerSocialTools",         // v3.0 Phase 4
       ];
 
       for (const exportName of expectedExports) {
