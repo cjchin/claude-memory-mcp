@@ -19,3 +19,4 @@ export { registerAutonomousTools } from "./autonomous-tools.js";
 export { registerConsolidationTools } from "./consolidation-tools.js";
 export { registerContradictionTools } from "./contradiction-tools.js";
 export { registerStatusTools } from "./status-tools.js";
+export { registerEmotionalTools } from "./emotional-tools.js";

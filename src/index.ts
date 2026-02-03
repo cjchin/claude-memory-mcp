@@ -30,6 +30,7 @@ import {
   registerConsolidationTools,
   registerContradictionTools,
   registerStatusTools,
+  registerEmotionalTools,
 } from "./tools/index.js";
 
 const server = new McpServer({
@@ -49,6 +50,7 @@ registerGraphTools(server);
 registerConsolidationTools(server);
 registerContradictionTools(server);
 registerStatusTools(server);
+registerEmotionalTools(server);  // v3.0 Phase 1
 registerPolicyTools(server);
 registerDreamTools(server);
 registerAutonomousTools(server);

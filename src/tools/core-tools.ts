@@ -30,6 +30,7 @@ import type { MemoryType } from "../types.js";
 import { recordToolActivity } from "./shadow-tools.js";
 import { checkDuplicates } from "../dedupe.js";
 import { searchWithContext } from "../search-service.js";
+import { inferEmotionalContext } from "../emotional-intelligence.js";
 
 export function registerCoreTools(server: McpServer): void {
   // Save a memory with auto-detection
@@ -72,6 +73,9 @@ export function registerCoreTools(server: McpServer): void {
       // Merge extracted entities into tags
       const mergedTags = [...new Set([...detectedTags, ...extractedEntities])];
 
+      // Infer emotional context (v3.0 Phase 1)
+      const emotionalContext = inferEmotionalContext(content);
+
       const id = await saveMemory({
         content: cleanedContent,
         type: detectedType,
@@ -82,6 +86,7 @@ export function registerCoreTools(server: McpServer): void {
         timestamp: new Date().toISOString(),
         valid_from: new Date().toISOString(),
         source: "human",
+        emotional_context: emotionalContext,  // v3.0 Phase 1
         // Store extracted reasoning in metadata
         metadata: extractedReasoning ? { reasoning: extractedReasoning } : undefined,
       });
@@ -91,11 +96,24 @@ export function registerCoreTools(server: McpServer): void {
       // Record shadow activity
       recordToolActivity("memory_access", `remember: ${detectedType} - ${cleanedContent.slice(0, 50)}...`);
 
+      // Build output message
+      let outputMessage = `Saved memory [${id}]\nType: ${detectedType}\nTags: ${mergedTags.join(", ") || "none"}\nImportance: ${detectedImportance}/5`;
+
+      // Add emotional context info
+      if (emotionalContext.dominant_emotion) {
+        outputMessage += `\nEmotion: ${emotionalContext.dominant_emotion} (valence: ${emotionalContext.valence.toFixed(2)}, arousal: ${emotionalContext.arousal.toFixed(2)})`;
+      }
+
+      // Add extracted entities if any
+      if (extractedEntities.length) {
+        outputMessage += `\nExtracted entities: ${extractedEntities.join(", ")}`;
+      }
+
       return {
         content: [
           {
             type: "text" as const,
-            text: `Saved memory [${id}]\nType: ${detectedType}\nTags: ${mergedTags.join(", ") || "none"}\nImportance: ${detectedImportance}/5${extractedEntities.length ? `\nExtracted entities: ${extractedEntities.join(", ")}` : ""}`,
+            text: outputMessage,
           },
         ],
       };

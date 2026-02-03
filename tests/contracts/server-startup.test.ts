@@ -114,7 +114,7 @@ describe("Server Startup Contracts", () => {
     it("should have reasonable number of tools", () => {
       // Sanity check - catch accidental mass duplication
       expect(toolRegistrations.length).toBeGreaterThan(10);
-      expect(toolRegistrations.length).toBeLessThan(50);
+      expect(toolRegistrations.length).toBeLessThan(60);  // Increased for v3.0 Phase 1 (emotional intelligence)
     });
   });
 
