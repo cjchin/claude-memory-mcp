@@ -16,7 +16,8 @@
 6. [Tool Ecosystem](#tool-ecosystem)
 7. [Memory Lifecycle](#memory-lifecycle)
 8. [Dream State Operations](#dream-state-operations)
-9. [Future Implementation Roadmap](#future-implementation-roadmap)
+9. [Tool Consolidation (v2.0)](#tool-consolidation-v20)
+10. [Future Implementation Roadmap](#future-implementation-roadmap)
 
 ---
 
@@ -1075,6 +1076,27 @@ npm run build && npm test
    - Ensure ChromaDB is running (integration tests need it)
    - Check Node version (requires 18+)
    - Clear dist: `rm -rf dist && npm run build`
+
+---
+
+## Tool Consolidation (v2.0)
+
+### Unified Tool Interfaces (2026-02-03)
+
+A major consolidation effort reduced tool overlap and improved usability:
+
+**3 New Unified Tools:**
+- **`consolidate_memories`** - Single interface for all consolidation workflows (direct/interactive/auto)
+- **`handle_contradictions`** - Unified contradiction handling (detect/interactive/auto)
+- **`system_status`** - Comprehensive system dashboard with section filtering
+
+**Benefits:**
+- Reduced functional overlap from 40% to minimal
+- Consistent parameter naming ("similarity" instead of varied names)
+- Clear workflow selection via mode parameters
+- 100% backward compatible (old tools preserved)
+
+**See:** [TOOL-CONSOLIDATION.md](./TOOL-CONSOLIDATION.md) for complete migration guide and usage examples.
 
 ---
 
