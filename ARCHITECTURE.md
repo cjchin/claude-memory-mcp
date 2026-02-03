@@ -190,6 +190,250 @@ interface Config {
 
 ---
 
+## Shadow Log - Ephemeral Working Memory
+
+**Module:** `src/shadow-log.ts` (708 lines)
+**Tools:** `src/tools/shadow-tools.ts` (435 lines)
+**Tests:** 60 unit tests + 14 integration tests
+**Status:** ✅ Enhanced (v3.0 Phase 1-3)
+
+### Overview
+
+The shadow log is an ephemeral working memory system that tracks exploration and activity before promoting insights to long-term memory. Think of it as short-term memory that accumulates context during a work session.
+
+**Core Concept:**
+```
+Activity Tracking → Shadow Accumulation → Threshold Check → Claude Reflection → Memory Promotion
+     (real-time)         (ephemeral)        (automated)      (intelligent)        (long-term)
+```
+
+### Architecture
+
+**Data Flow:**
+```
+┌──────────────────────────────────────────────────────────────┐
+│  ACTIVITY SOURCES                                             │
+├──────────────────────────────────────────────────────────────┤
+│  • MCP Tool Usage (remember, recall, get_memory)             │
+│  • Self-Reported (log_activity, batch_log_activities)        │
+│  • Built-in Tools (Read, Write, Grep, Bash) [manual]         │
+└───────────────────────┬──────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────────────────────┐
+│  SHADOW LOG (JSON Storage)                                   │
+├──────────────────────────────────────────────────────────────┤
+│  • Topic-based grouping (inferred from activities)           │
+│  • Token accumulation (density measure)                      │
+│  • Activity deduplication (configurable)                     │
+│  • Status tracking (active → idle → promoted/decayed)        │
+└───────────────────────┬──────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────────────────────┐
+│  PROMOTION LOGIC                                             │
+├──────────────────────────────────────────────────────────────┤
+│  Thresholds:                                                 │
+│  • Token threshold: 500 tokens (configurable)                │
+│  • Time threshold: 30 minutes active (configurable)          │
+│  • Surface threshold: 60% of promotion threshold             │
+│                                                               │
+│  Surfacing Points:                                           │
+│  • prime: Shows promotion candidates at session start        │
+│  • conclude: Shows session shadows for reflection            │
+└───────────────────────┬──────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────────────────────┐
+│  CLAUDE REFLECTION & SYNTHESIS                               │
+├──────────────────────────────────────────────────────────────┤
+│  Claude sees formatted shadow activities and:                │
+│  • Reflects on what was learned                              │
+│  • Synthesizes key insights                                  │
+│  • Calls remember() to save to long-term memory              │
+│  • Uses Claude Sonnet 4.5's superior reasoning               │
+└───────────────────────┬──────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────────────────────┐
+│  LONG-TERM MEMORY (ChromaDB)                                 │
+│  High-quality, synthesized insights                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Key Features (v3.0 Enhancements)
+
+**1. Activity Self-Reporting (Phase 1)**
+- MCP tools: `log_activity`, `batch_log_activities`
+- Activity types: file_read, file_write, search, command, topic_shift, memory_access
+- Token estimation and accumulation
+- Automatic topic inference from activities
+
+**2. Activity Deduplication (Phase 1)**
+- Configurable via `shadow_deduplicate: true`
+- Collapses repeated activities (e.g., reading same file 10 times → 1 entry with count=10)
+- Preserves frequency signal while reducing noise
+- Metadata tracks: count, first_seen, last_seen
+
+**3. Shadow Formatting for Claude (Phase 2)**
+- Human-readable summary of shadow activities
+- Functions: `formatShadowForClaude()`, `countActivityTypes()`, `extractKeyDetails()`
+- Shows: file operations, searches, commands, memory access, active minutes
+- Used in `prime` and `conclude` tool output
+
+**4. Shadow Surfacing (Phase 3)**
+- **In `prime` tool:** Shows promotion candidates (≥60% of threshold)
+  - Example: "Shadow: 'authentication' (520 tokens, 28min active)"
+  - Prompts Claude to reflect and save insights
+- **In `conclude` tool:** Shows session shadows for review
+  - Lists all shadows from current session
+  - Encourages synthesis before session end
+- Configurable thresholds and enable/disable flags
+
+### Data Model
+
+**ShadowEntry:**
+```typescript
+{
+  id: string                    // shadow_<timestamp>_<random>
+  session_id: string            // Which Claude session
+  topic: string                 // Inferred from activities (e.g., "authentication")
+
+  // Timing
+  created_at: string            // When shadow started
+  last_activity: string         // Last activity timestamp
+
+  // Accumulated activity
+  activities: ShadowActivity[]  // All recorded activities
+  tokens: number                // Total density measure
+
+  // State
+  status: "active" | "idle" | "promoted" | "decayed"
+  promoted_memory_id?: string   // Link to long-term memory (if promoted)
+  project?: string              // Project context
+  summary?: string              // Auto-generated summary
+}
+```
+
+**ShadowActivity:**
+```typescript
+{
+  timestamp: string
+  type: ShadowActivityType      // file_read | file_write | search | command | ...
+  detail: string                // File path, query, command, etc.
+  tokens?: number               // Estimated tokens for this activity
+  metadata?: {
+    count?: number              // Deduplication count
+    first_seen?: string         // First occurrence (if deduplicated)
+    last_seen?: string          // Most recent occurrence
+  }
+}
+```
+
+### MCP Tools
+
+| Tool | Purpose | Usage Pattern |
+|------|---------|---------------|
+| `log_activity` | Record single activity | After Read/Write/Grep/Bash usage |
+| `batch_log_activities` | Record multiple activities | End of work sequence (preferred) |
+| `shadow_status` | View active shadows | Check working memory state |
+| `promote_shadow` | Manual promotion | Convert shadow to memory (rare) |
+
+### Promotion Flow
+
+**Automatic Surfacing (Preferred):**
+1. Activities accumulate during work session
+2. `prime` at session start: Shows candidates for review
+3. `conclude` at session end: Shows session shadows for reflection
+4. Claude synthesizes insights and calls `remember()`
+5. Shadow marked as promoted with memory ID link
+
+**Manual Promotion (Edge Cases):**
+1. Call `promote_shadow` with shadow ID or topic
+2. Generates heuristic summary from activities
+3. Creates memory with type="shadow", importance=2
+4. Metadata tracks: source, activity_count, token_density, active_minutes
+
+### Configuration
+
+```typescript
+// In ~/.claude-memory/config.json
+{
+  // Core settings
+  shadow_enabled: true,                 // Enable/disable shadow log
+  shadow_token_threshold: 500,          // Promote at N tokens
+  shadow_time_threshold_min: 30,        // Promote after N minutes
+  shadow_idle_timeout_min: 10,          // Mark idle after N minutes
+  shadow_decay_hours: 24,               // Decay after N hours
+  shadow_max_entries: 20,               // Max concurrent shadows
+
+  // Deduplication (Phase 1)
+  shadow_deduplicate: true,             // Collapse repeated activities
+
+  // Surfacing (Phase 3)
+  shadow_surface_in_prime: true,        // Show candidates in prime
+  shadow_surface_in_conclude: true,     // Show shadows in conclude
+  shadow_surface_threshold: 0.6         // Surface at 60% of threshold
+}
+```
+
+### Performance
+
+**Operations:**
+- `recordActivity`: O(n) for deduplication check (last 50 activities)
+- `checkPromotionThresholds`: O(n) scan of all shadows
+- `getSessionShadows`: O(n) filter by session ID
+- `formatShadowForClaude`: O(m) where m = activities in shadow
+
+**Storage:**
+- File-based JSON (lightweight, no external dependencies)
+- Location: `~/.claude-memory/shadow-log.json`
+- Cleanup: Automatic decay and pruning of old entries
+
+### Testing
+
+**Unit Tests (60):**
+- `tests/unit/shadow-log.test.ts`
+- Coverage: Activity creation, topic inference, promotion thresholds, deduplication
+- New tests (Phase 1-2): Activity types, deduplication counts, formatting
+
+**Integration Tests (14):**
+- `tests/integration/shadow-surface.test.ts`
+- Coverage: Shadow surfacing in prime/conclude, threshold filtering, configuration
+- Cross-layer: Shadow + prime/conclude integration
+
+### Design Decisions
+
+**Why JSON Storage Instead of ChromaDB?**
+- Ephemeral data doesn't need vector search
+- Lower overhead, faster writes
+- Independent lifecycle from long-term memories
+
+**Why Claude-Assisted Promotion Instead of Separate LLM?**
+- Claude has full conversation context
+- Claude knows WHY files were read, not just WHAT
+- Uses Claude Sonnet 4.5's superior reasoning
+- More natural: Claude synthesizes, not separate system
+
+**Why Activity Deduplication?**
+- Reduces noise (reading same file 10 times)
+- Preserves frequency signal (metadata.count)
+- Improves Claude's reflection (less clutter)
+
+### Future Enhancements (Deferred)
+
+**Phase 4: Link Shadows to Memories (Optional)**
+- Automatic linking when `remember()` called after seeing shadow
+- Track "active shadow context" during conclude
+- Mark shadow as promoted with memory ID
+
+**Rationale for Deferral:**
+- Not critical for initial release
+- Shadows already surface in conclude for review
+- Can add automatic linking later without breaking changes
+
+---
+
 ## Intelligence Layers
 
 ### Layer 1: Emotional Intelligence (496 lines)
