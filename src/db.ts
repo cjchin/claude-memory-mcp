@@ -884,7 +884,12 @@ export async function findSimilarMemories(
 export async function consolidateMemories(
   ids: string[],
   mergedContent: string,
-  keepMetadataFrom: string
+  keepMetadataFrom: string,
+  overrides?: {
+    tags?: string[];
+    importance?: number;
+    metadata?: Record<string, any>;
+  }
 ): Promise<string> {
   const sourceMemory = await getMemory(keepMetadataFrom);
   if (!sourceMemory) throw new Error("Source memory not found");
@@ -893,11 +898,12 @@ export async function consolidateMemories(
   const newId = await saveMemory({
     content: mergedContent,
     type: sourceMemory.type,
-    tags: sourceMemory.tags,
+    tags: overrides?.tags || sourceMemory.tags,
     timestamp: new Date().toISOString(),
     project: sourceMemory.project,
-    importance: Math.max(sourceMemory.importance, 4), // Boost importance
+    importance: overrides?.importance || Math.max(sourceMemory.importance, 4), // Boost importance
     related_memories: ids,
+    metadata: overrides?.metadata,
   });
 
   // Delete old memories

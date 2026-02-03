@@ -16,3 +16,4 @@ export { registerGraphTools } from "./graph-tools.js";
 export { registerPolicyTools, policyEngine } from "./policy-tools.js";
 export { registerDreamTools } from "./dream-tools.js";
 export { registerAutonomousTools } from "./autonomous-tools.js";
+export { registerConsolidationTools } from "./consolidation-tools.js";
