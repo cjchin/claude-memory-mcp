@@ -20,3 +20,4 @@ export { registerConsolidationTools } from "./consolidation-tools.js";
 export { registerContradictionTools } from "./contradiction-tools.js";
 export { registerStatusTools } from "./status-tools.js";
 export { registerEmotionalTools } from "./emotional-tools.js";
+export { registerNarrativeTools } from "./narrative-tools.js";
