@@ -76,6 +76,9 @@ export interface Memory {
   superseded_by?: string;        // ID of memory that replaced this
   confidence?: number;           // 0-1, how certain we are
   source?: "human" | "inferred" | "consolidated" | "llm_consolidated" | "conscious_merge" | "conscious_consolidation"; // Origin of memory
+
+  // Emotional Intelligence (v3.0 Phase 1)
+  emotional_context?: EmotionalContext;    // Optional emotional metadata
 }
 
 export interface Session {
@@ -169,6 +172,74 @@ export interface FoundationalMemory extends Memory {
   category: FoundationalCategory;
   importance: 5;  // Always maximum
   confidence: 1;  // Always certain
+}
+
+// ============================================================================
+// Emotional Intelligence Types - Phase 1 of v3.0 Evolution
+// ============================================================================
+
+/**
+ * Basic emotions (Ekman's six universal emotions + neutral)
+ */
+export type BasicEmotion =
+  | "joy"
+  | "sadness"
+  | "fear"
+  | "anger"
+  | "surprise"
+  | "disgust"
+  | "neutral";
+
+/**
+ * Emotional context for a memory (Russell's Circumplex Model)
+ *
+ * Uses two-dimensional valence-arousal model:
+ * - Valence: negative (-1) to positive (+1)
+ * - Arousal: calm (0) to excited (1)
+ *
+ * Examples:
+ * - Happy: valence=0.8, arousal=0.6
+ * - Sad: valence=-0.7, arousal=0.2
+ * - Angry: valence=-0.6, arousal=0.9
+ * - Calm: valence=0.2, arousal=0.1
+ */
+export interface EmotionalContext {
+  // Core dimensions (Russell's Circumplex)
+  valence: number;                    // -1 (negative) to +1 (positive)
+  arousal: number;                    // 0 (calm) to 1 (excited)
+
+  // Discrete emotions (Ekman)
+  dominant_emotion?: BasicEmotion;    // Primary emotion
+  secondary_emotions?: Array<{        // Secondary emotions with intensity
+    emotion: string;                  // Emotion label (can be more nuanced than BasicEmotion)
+    intensity: number;                // 0-1, how strong this emotion is
+  }>;
+
+  // Emotional evolution (for belief updates)
+  initial_emotion?: string;           // Original emotional state
+  current_emotion?: string;           // Current emotional state (if changed)
+
+  // Confidence and source
+  emotional_confidence?: number;      // 0-1, how confident the inference is
+  detected_by?: "explicit" | "inferred" | "user_specified"; // Origin of emotional data
+
+  // Timestamp (for decay calculations)
+  emotional_timestamp?: string;       // When emotion was captured
+}
+
+/**
+ * Emotional decay parameters (Phase 1)
+ *
+ * Models psychological phenomena:
+ * - Hedonic adaptation: positive emotions fade faster
+ * - Negativity bias: negative emotions linger
+ * - Flashbulb memory: high arousal resists decay
+ */
+export interface EmotionalDecayConfig {
+  positive_decay_rate: number;       // How fast positive valence fades (default: 0.15/day)
+  negative_decay_rate: number;       // How fast negative valence fades (default: 0.08/day)
+  arousal_protection: number;        // High arousal slows decay (default: 0.5)
+  flashbulb_threshold: number;       // Arousal level for flashbulb effect (default: 0.8)
 }
 
 // ============================================================================
