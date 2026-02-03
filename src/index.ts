@@ -32,6 +32,7 @@ import {
   registerStatusTools,
   registerEmotionalTools,
   registerNarrativeTools,
+  registerMultiAgentTools,
 } from "./tools/index.js";
 
 const server = new McpServer({
@@ -53,6 +54,7 @@ registerContradictionTools(server);
 registerStatusTools(server);
 registerEmotionalTools(server);  // v3.0 Phase 1
 registerNarrativeTools(server);  // v3.0 Phase 2
+registerMultiAgentTools(server);  // v3.0 Phase 3
 registerPolicyTools(server);
 registerDreamTools(server);
 registerAutonomousTools(server);
