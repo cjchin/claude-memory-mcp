@@ -1,9 +1,9 @@
 name: Dream State - Memory Consolidation
 
 on:
-  schedule:
-    # Run daily at 3 AM UTC (overnight processing)
-    - cron: '0 3 * * *'
+  # Schedule disabled - dream cycles run locally against real ChromaDB data
+  # schedule:
+  #   - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
       mode:
